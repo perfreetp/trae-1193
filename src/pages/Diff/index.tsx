@@ -30,6 +30,7 @@ import type {
 } from '@/types';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/appStore';
+import type { ScanHistory } from '@/types';
 
 const methodColors: Record<HttpMethod, string> = {
   GET: 'bg-success-500',
@@ -417,6 +418,7 @@ function CreateWorkItemModal({
 export default function Diff() {
   const [searchParams] = useSearchParams();
   const sources = useAppStore((s) => s.sources);
+  const scanHistories = useAppStore((s) => s.scanHistories);
   const allSources = sources.length ? sources : mockSources;
 
   const [leftSourceId, setLeftSourceId] = useState(mockSources[0].id);
@@ -564,6 +566,47 @@ export default function Diff() {
     });
     return s;
   }, [filteredChanges]);
+
+  const scanFrom = useMemo<ScanHistory | undefined>(() => {
+    return scanHistories.find(
+      (h) =>
+        h.sourceId === leftSourceId &&
+        h.version === leftVersion &&
+        h.status === 'success',
+    );
+  }, [scanHistories, leftSourceId, leftVersion]);
+
+  const scanTo = useMemo<ScanHistory | undefined>(() => {
+    return scanHistories.find(
+      (h) =>
+        h.sourceId === rightSourceId &&
+        h.version === rightVersion &&
+        h.status === 'success',
+    );
+  }, [scanHistories, rightSourceId, rightVersion]);
+
+  const scanSummaryStats = useMemo<Stats | null>(() => {
+    if (!scanFrom || !scanTo) return null;
+
+    const added =
+      (scanTo.newApis ?? 0) > 0
+        ? scanTo.newApis
+        : Math.max(0, (scanTo.apiCount ?? 0) - (scanFrom.apiCount ?? 0));
+
+    const removed =
+      (scanTo.removedApis ?? 0) > 0
+        ? scanTo.removedApis
+        : Math.max(0, (scanFrom.apiCount ?? 0) - (scanTo.apiCount ?? 0));
+
+    const modified = scanTo.modifiedApis ?? 0;
+    const breaking = scanTo.breakingChanges ?? 0;
+    const total = added + removed + modified;
+
+    return { added, removed, modified, breaking, total };
+  }, [scanFrom, scanTo]);
+
+  const showScanSummary = scanFrom && scanTo && filteredChanges.length === 0;
+  const showTotalSummary = filteredChanges.length > 0;
 
   const categoryChanges = useMemo(
     () => filteredChanges.filter((c) => c.category === activeCategory),
@@ -782,6 +825,148 @@ export default function Diff() {
               </span>
             </div>
           </div>
+
+          {showScanSummary && scanSummaryStats && (
+            <div className="mb-4 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50/80 via-white to-brand-50/60 p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h3 className="font-display text-base font-bold text-ink-700 flex items-center gap-2">
+                    <GitCompare className="h-4 w-4 text-brand-500" />
+                    扫描汇总
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-ink-400">
+                    （根据两次扫描记录汇总生成，暂无详细变更明细）
+                  </p>
+                </div>
+                <div className="text-xs text-ink-400 font-mono">
+                  v{scanFrom?.version} → v{scanTo?.version}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                <div className="rounded-lg border border-success-200 bg-success-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-success-600 flex items-center gap-1">
+                      <Plus className="h-3 w-3" /> 新增
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-success-700">
+                    +{scanSummaryStats.added}
+                  </div>
+                  <div className="text-[10px] text-success-500 mt-0.5">新增接口数</div>
+                </div>
+                <div className="rounded-lg border border-danger-200 bg-danger-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-danger-600 flex items-center gap-1">
+                      <Minus className="h-3 w-3" /> 删除
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-danger-700">
+                    -{scanSummaryStats.removed}
+                  </div>
+                  <div className="text-[10px] text-danger-500 mt-0.5">删除接口数</div>
+                </div>
+                <div className="rounded-lg border border-warning-200 bg-warning-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-warning-600 flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" /> 修改
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-warning-700">
+                    ~{scanSummaryStats.modified}
+                  </div>
+                  <div className="text-[10px] text-warning-500 mt-0.5">修改接口数</div>
+                </div>
+                <div className="rounded-lg border border-danger-300 bg-danger-50/80 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-danger-700 flex items-center gap-1">
+                      <XCircle className="h-3 w-3" /> 破坏性
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-danger-800">
+                    !{scanSummaryStats.breaking}
+                  </div>
+                  <div className="text-[10px] text-danger-600 mt-0.5">破坏性变更</div>
+                </div>
+                <div className="rounded-lg border border-ink-200 bg-gradient-to-br from-ink-50 to-white p-3 col-span-2 sm:col-span-1">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-ink-600">合计变更</span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-ink-700">
+                    {scanSummaryStats.total}
+                  </div>
+                  <div className="text-[10px] text-ink-500 mt-0.5">总变更项数</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showTotalSummary && (
+            <div className="mb-4 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50/80 via-white to-brand-50/60 p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h3 className="font-display text-base font-bold text-ink-700 flex items-center gap-2">
+                    <GitCompare className="h-4 w-4 text-brand-500" />
+                    变更总览
+                  </h3>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                <div className="rounded-lg border border-success-200 bg-success-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-success-600 flex items-center gap-1">
+                      <Plus className="h-3 w-3" /> 新增
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-success-700">
+                    +{totalStats.added}
+                  </div>
+                  <div className="text-[10px] text-success-500 mt-0.5">新增项</div>
+                </div>
+                <div className="rounded-lg border border-danger-200 bg-danger-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-danger-600 flex items-center gap-1">
+                      <Minus className="h-3 w-3" /> 删除
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-danger-700">
+                    -{totalStats.removed}
+                  </div>
+                  <div className="text-[10px] text-danger-500 mt-0.5">删除项</div>
+                </div>
+                <div className="rounded-lg border border-warning-200 bg-warning-50/70 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-warning-600 flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" /> 修改
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-warning-700">
+                    ~{totalStats.modified}
+                  </div>
+                  <div className="text-[10px] text-warning-500 mt-0.5">修改项</div>
+                </div>
+                <div className="rounded-lg border border-danger-300 bg-danger-50/80 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-danger-700 flex items-center gap-1">
+                      <XCircle className="h-3 w-3" /> 破坏性
+                    </span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-danger-800">
+                    !{totalStats.breaking}
+                  </div>
+                  <div className="text-[10px] text-danger-600 mt-0.5">破坏性变更</div>
+                </div>
+                <div className="rounded-lg border border-ink-200 bg-gradient-to-br from-ink-50 to-white p-3 col-span-2 sm:col-span-1">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-ink-600">合计变更</span>
+                  </div>
+                  <div className="font-display text-2xl font-bold text-ink-700">
+                    {totalStats.total}
+                  </div>
+                  <div className="text-[10px] text-ink-500 mt-0.5">总变更项数</div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {categories.map((cat) => {

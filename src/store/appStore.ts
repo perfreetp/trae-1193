@@ -41,6 +41,7 @@ interface AppState {
   removeAlertRule: (id: string) => void;
 
   addScanHistory: (scan: ScanHistory) => void;
+  updateScanHistory: (id: string, patch: Partial<ScanHistory>) => void;
   addImportRecord: (rec: ImportRecord) => void;
   getScanHistoriesBySource: (sourceId: string) => ScanHistory[];
   getImportRecordsBySource: (sourceId: string) => ImportRecord[];
@@ -127,6 +128,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addScanHistory: (scan) =>
     set((state) => ({ scanHistories: [scan, ...state.scanHistories] })),
+  updateScanHistory: (id, patch) =>
+    set((state) => ({
+      scanHistories: state.scanHistories.map((h) =>
+        h.id === id ? { ...h, ...patch } : h,
+      ),
+    })),
   addImportRecord: (rec) =>
     set((state) => ({ importRecords: [rec, ...state.importRecords] })),
   getScanHistoriesBySource: (id) =>

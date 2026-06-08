@@ -496,7 +496,7 @@ function ImportDocModal({ open, onClose, onSuccess, onImportComplete }: {
 
       setImporting(false);
       const isNew = !duplicateInfo;
-      const tab: DetailTab = isNew ? 'scan' : 'import';
+      const tab: DetailTab = 'import';
       onSuccess(
         isNew ? `导入成功，新建源「${targetSource!.name}」，共 ${parsedApiCount} 个接口`
           : finalImportMode === 'overwrite' ? `覆盖成功，共 ${parsedApiCount} 个接口`
@@ -606,6 +606,7 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
 }) {
   const navigate = useNavigate();
   const addScanHistory = useAppStore((s) => s.addScanHistory);
+  const updateScanHistory = useAppStore((s) => s.updateScanHistory);
   const updateSource = useAppStore((s) => s.updateSource);
   const getScanHistoriesBySource = useAppStore((s) => s.getScanHistoriesBySource);
   const getImportRecordsBySource = useAppStore((s) => s.getImportRecordsBySource);
@@ -617,17 +618,26 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => { if (open && source) setActiveTab(initialTab); }, [open, source, initialTab]);
-  if (!open || !source) return null;
-  const currentSource = sources.find((s) => s.id === source.id) || source;
-  const scanHistories = useMemo(() => [...getScanHistoriesBySource(source.id)].sort((a, b) => new Date(b.scanAt).getTime() - new Date(a.scanAt).getTime()), [source.id, getScanHistoriesBySource, refreshKey, scanning]);
-  const importRecords = useMemo(() => [...getImportRecordsBySource(source.id)].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()), [source.id, getImportRecordsBySource, refreshKey]);
+
+  const currentSource = source ? (sources.find((s) => s.id === source.id) || source) : null;
+  const scanHistories = useMemo(() => {
+    if (!source) return [];
+    return [...getScanHistoriesBySource(source.id)].sort((a, b) => new Date(b.scanAt).getTime() - new Date(a.scanAt).getTime());
+  }, [source ? source.id : '', refreshKey, scanning, source]);
+  const importRecords = useMemo(() => {
+    if (!source) return [];
+    return [...getImportRecordsBySource(source.id)].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime());
+  }, [source ? source.id : '', refreshKey, source]);
   const versionOptions = useMemo(() => scanHistories.filter((h) => h.status === 'success').map((h) => ({ version: h.version, scanAt: h.scanAt })), [scanHistories]);
   const recentVersions = versionOptions.slice(0, 4);
 
   useEffect(() => {
+    if (!source) return;
     if (versionOptions.length >= 2) { setVersionFrom(versionOptions[1].version); setVersionTo(versionOptions[0].version); }
     else if (versionOptions.length === 1) { setVersionFrom(versionOptions[0].version); setVersionTo(versionOptions[0].version); }
-  }, [source.id, versionOptions.length]);
+  }, [source ? source.id : '', versionOptions.length, source]);
+
+  if (!open || !source || !currentSource) return null;
 
   const handleScanNow = () => {
     if (scanning) return;
@@ -651,10 +661,10 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
       const breakingChanges = Math.random() < 0.3 ? Math.floor(Math.random() * 3) + 1 : 0;
       if (isFailed) {
         const failReason = FAIL_REASONS[Math.floor(Math.random() * FAIL_REASONS.length)];
-        addScanHistory({ id: 'sh-' + Date.now().toString(36), sourceId: src.id, version: src.currentVersion, scanAt: new Date().toISOString(), status: 'failed', failReason, triggeredBy: 'manual', operator: operatorName, durationMs, apiCount: src.apiCount, apiCountDelta: 0, newApis: 0, modifiedApis: 0, removedApis: 0, totalChanges: 0, breakingChanges: 0 });
+        updateScanHistory(runningId, { status: 'failed', failReason, durationMs, apiCountDelta: 0, newApis: 0, modifiedApis: 0, removedApis: 0, totalChanges: 0, breakingChanges: 0 });
         pushToast('error', `扫描失败：${failReason}`);
       } else {
-        addScanHistory({ id: 'sh-' + Date.now().toString(36), sourceId: src.id, version: newVers, scanAt: new Date().toISOString(), status: 'success', triggeredBy: 'manual', operator: operatorName, durationMs, apiCount: newApiCount, apiCountDelta, newApis, modifiedApis, removedApis, totalChanges, breakingChanges });
+        updateScanHistory(runningId, { status: 'success', version: newVers, durationMs, apiCount: newApiCount, apiCountDelta, newApis, modifiedApis, removedApis, totalChanges, breakingChanges });
         updateSource(src.id, { currentVersion: newVers, lastScanAt: new Date().toISOString(), apiCount: newApiCount });
         pushToast('success', `扫描完成：版本 ${newVers}，共 ${totalChanges} 项变更`);
       }
@@ -898,7 +908,7 @@ function ConfirmDeleteModal({ open, source, onClose, onSuccess }: { open: boolea
 
 export default function Sources() {
   const navigate = useNavigate();
-  const { sources, updateSource, addScanHistory } = useAppStore();
+  const { sources, updateSource, addScanHistory, updateScanHistory } = useAppStore();
   const [search, setSearch] = useState('');
   const [activeSystem, setActiveSystem] = useState<string | null>(null);
   const [scanningId, setScanningId] = useState<string | null>(null);
@@ -950,10 +960,10 @@ export default function Sources() {
       const breakingChanges = Math.random() < 0.3 ? Math.floor(Math.random() * 3) + 1 : 0;
       if (isFailed) {
         const failReason = FAIL_REASONS[Math.floor(Math.random() * FAIL_REASONS.length)];
-        addScanHistory({ id: 'sh-' + Date.now().toString(36), sourceId: src.id, version: src.currentVersion, scanAt: new Date().toISOString(), status: 'failed', failReason, triggeredBy: 'manual', operator: operatorName, durationMs, apiCount: src.apiCount, apiCountDelta: 0, newApis: 0, modifiedApis: 0, removedApis: 0, totalChanges: 0, breakingChanges: 0 });
+        updateScanHistory(runningId, { status: 'failed', failReason, durationMs, apiCountDelta: 0, newApis: 0, modifiedApis: 0, removedApis: 0, totalChanges: 0, breakingChanges: 0 });
         pushToast('error', `扫描失败：${failReason}`);
       } else {
-        addScanHistory({ id: 'sh-' + Date.now().toString(36), sourceId: src.id, version: newVers, scanAt: new Date().toISOString(), status: 'success', triggeredBy: 'manual', operator: operatorName, durationMs, apiCount: newApiCount, apiCountDelta, newApis, modifiedApis, removedApis, totalChanges, breakingChanges });
+        updateScanHistory(runningId, { status: 'success', version: newVers, durationMs, apiCount: newApiCount, apiCountDelta, newApis, modifiedApis, removedApis, totalChanges, breakingChanges });
         updateSource(src.id, { currentVersion: newVers, lastScanAt: new Date().toISOString(), apiCount: newApiCount });
         pushToast('success', `「${src.name}」扫描完成：版本 ${newVers}，${totalChanges} 项变更`);
         if (navigate) void 0;
@@ -967,8 +977,11 @@ export default function Sources() {
   const handleDelete = (src: ApiSource) => { setDrawerOpen(false); setTimeout(() => { setDeleteSrc(src); setDeleteOpen(true); }, 150); };
   const openDrawer = (src: ApiSource, tab: DetailTab = 'scan') => { setDrawerSource(src); setDrawerTab(tab); setDrawerOpen(true); };
   const onImportComplete = (sourceId: string, initialTab: DetailTab) => {
-    const src = sources.find((s) => s.id === sourceId);
-    if (src) openDrawer(src, initialTab);
+    setTimeout(() => {
+      const currentSources = useAppStore.getState().sources;
+      const src = currentSources.find((s) => s.id === sourceId);
+      if (src) openDrawer(src, initialTab);
+    }, 0);
   };
 
   return (
