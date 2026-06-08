@@ -32,6 +32,7 @@ interface AppState {
 
   toggleAlertRule: (id: string) => void;
   addAlertRule: (rule: AlertRule) => void;
+  updateAlertRule: (id: string, patch: Partial<AlertRule>) => void;
   removeAlertRule: (id: string) => void;
 }
 
@@ -100,6 +101,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   addAlertRule: (rule) =>
     set((state) => ({ alertRules: [rule, ...state.alertRules] })),
+  updateAlertRule: (id, patch) =>
+    set((state) => ({
+      alertRules: state.alertRules.map((r) =>
+        r.id === id ? { ...r, ...patch } : r,
+      ),
+    })),
   removeAlertRule: (id) =>
     set((state) => ({
       alertRules: state.alertRules.filter((r) => r.id !== id),

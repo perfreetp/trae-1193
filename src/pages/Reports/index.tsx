@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { PageContainer } from '@/components/Layout';
 import { mockReports, mockWeeklyReport } from '@/mock/reports';
+import type { WeeklyReport } from '@/types';
 import {
   FileBarChart2,
   Download,
@@ -32,8 +34,428 @@ import {
 } from 'recharts';
 import { cn } from '@/lib/utils';
 
+function formatDateCompact(dateStr: string): string {
+  return dateStr.replace(/-/g, '');
+}
+
+function getFileDateRange(report: WeeklyReport): string {
+  return `${formatDateCompact(report.weekStart)}-${formatDateCompact(report.weekEnd)}`;
+}
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+interface ToastItem {
+  id: number;
+  message: string;
+}
+
+let toastSeq = 0;
+
+function useToast() {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const showToast = (message: string): void => {
+    const id = ++toastSeq;
+    setToasts((prev) => [...prev, { id, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 2500);
+  };
+
+  const ToastContainer = (
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className="pointer-events-auto px-4 py-3 rounded-xl backdrop-blur-xl bg-white/70 border border-white/60 shadow-lg text-sm text-ink-700 font-medium animate-fade-in"
+        >
+          {t.message}
+        </div>
+      ))}
+    </div>
+  );
+
+  return { showToast, ToastContainer };
+}
+
+function escapeCsv(val: string | number): string {
+  const s = String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function generatePdfReportHtml(report: WeeklyReport, history: WeeklyReport[]): string {
+  const { summary, weekStart, weekEnd, risks, bySystem } = report;
+  const resolvedRate = Math.round(summary.resolvedRate * 100);
+
+  const stats = [
+    { label: '数据源总数', value: summary.totalSources },
+    { label: '本周变更数', value: summary.totalChanges },
+    { label: '破坏性变更', value: summary.breakingCount },
+    { label: '变更解决率', value: `${resolvedRate}%` },
+    { label: '平均处理时长', value: `${summary.avgHandleHours}h` },
+  ];
+
+  const historyRows = history.slice(0, 4).map((r) => `
+    <tr>
+      <td>${r.weekStart}</td>
+      <td>${r.weekEnd}</td>
+      <td>${r.summary.totalChanges}</td>
+      <td>${r.summary.breakingCount}</td>
+      <td>${Math.round(r.summary.resolvedRate * 100)}%</td>
+      <td>${r.summary.avgHandleHours}h</td>
+    </tr>
+  `).join('');
+
+  const systemRows = bySystem.map((s) => `
+    <tr>
+      <td>${s.system}</td>
+      <td>${s.changes}</td>
+      <td>${s.breaking}</td>
+    </tr>
+  `).join('');
+
+  const riskItems = risks.length
+    ? risks.map((r) => `<li>${r}</li>`).join('')
+    : '<li>本周无风险提示</li>';
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>API 变更周报（${weekStart} ~ ${weekEnd}）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 48px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #ffffff;
+    color: #1d2129;
+    line-height: 1.6;
+  }
+  .header {
+    border-bottom: 3px solid #165DFF;
+    padding-bottom: 18px;
+    margin-bottom: 28px;
+  }
+  .header .brand {
+    font-size: 12px;
+    color: #7A8494;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 26px;
+    color: #1d2129;
+    font-weight: 700;
+  }
+  .header .sub {
+    margin-top: 6px;
+    color: #4E5969;
+    font-size: 13px;
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1d2129;
+    margin: 28px 0 12px 0;
+    padding-left: 10px;
+    border-left: 4px solid #165DFF;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 16px;
+  }
+  .stat-card {
+    border: 1px solid #E5E6EB;
+    border-radius: 10px;
+    padding: 16px;
+    background: linear-gradient(180deg, #F7F8FA 0%, #FFFFFF 100%);
+  }
+  .stat-card .label {
+    font-size: 12px;
+    color: #7A8494;
+    margin-bottom: 6px;
+  }
+  .stat-card .value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #165DFF;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table th {
+    background: #165DFF;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 10px 12px;
+    text-align: left;
+    border: 1px solid #165DFF;
+  }
+  table td {
+    padding: 10px 12px;
+    border: 1px solid #E5E6EB;
+    color: #1d2129;
+  }
+  table tbody tr:nth-child(even) td {
+    background: #F7F8FA;
+  }
+  .risks {
+    background: #FFF3E8;
+    border: 1px solid #FFD5B0;
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+  .risks ul {
+    margin: 0;
+    padding-left: 22px;
+  }
+  .risks li {
+    color: #7A3B00;
+    margin: 6px 0;
+  }
+  .footer {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #E5E6EB;
+    font-size: 12px;
+    color: #7A8494;
+    text-align: center;
+  }
+  @media print {
+    body { padding: 20px; }
+    .stats { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">API Governance Weekly Report</div>
+    <h1>API 变更周报（${weekStart} ~ ${weekEnd}）</h1>
+    <div class="sub">生成时间：${new Date().toLocaleString('zh-CN')} · 共 ${summary.totalSources} 个数据源接入</div>
+  </div>
+
+  <div class="section-title">摘要统计</div>
+  <div class="stats">
+    ${stats.map((s) => `
+      <div class="stat-card">
+        <div class="label">${s.label}</div>
+        <div class="value">${s.value}</div>
+      </div>
+    `).join('')}
+  </div>
+
+  <div class="section-title">风险提示</div>
+  <div class="risks">
+    <ul>${riskItems}</ul>
+  </div>
+
+  <div class="section-title">按系统分布</div>
+  <table>
+    <thead>
+      <tr>
+        <th>系统</th>
+        <th>全部变更</th>
+        <th>破坏性变更</th>
+      </tr>
+    </thead>
+    <tbody>${systemRows}</tbody>
+  </table>
+
+  <div class="section-title">历史周报概览</div>
+  <table>
+    <thead>
+      <tr>
+        <th>周开始</th>
+        <th>周结束</th>
+        <th>总变更</th>
+        <th>破坏性</th>
+        <th>解决率</th>
+        <th>平均时长</th>
+      </tr>
+    </thead>
+    <tbody>${historyRows}</tbody>
+  </table>
+
+  <div class="footer">
+    © 2026 API 治理平台 · 本报告为自动生成，使用浏览器 Ctrl+P 可另存为 PDF
+  </div>
+</body>
+</html>`;
+}
+
+function generateCsv(report: WeeklyReport, history: WeeklyReport[]): string {
+  const lines: string[] = [];
+  const s = report.summary;
+
+  lines.push([
+    'Summary',
+    report.weekStart,
+    report.weekEnd,
+    s.totalSources,
+    s.totalChanges,
+    s.breakingCount,
+    (s.resolvedRate * 100).toFixed(2) + '%',
+    s.avgHandleHours,
+  ].map(escapeCsv).join(','));
+
+  lines.push('');
+  lines.push(['System', 'Changes', 'Breaking'].map(escapeCsv).join(','));
+  for (const row of report.bySystem) {
+    lines.push([row.system, row.changes, row.breaking].map(escapeCsv).join(','));
+  }
+
+  lines.push('');
+  lines.push([
+    'WeekStart',
+    'WeekEnd',
+    'TotalChanges',
+    'Breaking',
+    'ResolvedRate',
+    'AvgHours',
+  ].map(escapeCsv).join(','));
+  for (const r of history) {
+    lines.push([
+      r.weekStart,
+      r.weekEnd,
+      r.summary.totalChanges,
+      r.summary.breakingCount,
+      (r.summary.resolvedRate * 100).toFixed(2) + '%',
+      r.summary.avgHandleHours,
+    ].map(escapeCsv).join(','));
+  }
+
+  return '\ufeff' + lines.join('\r\n');
+}
+
+function generateWordHtml(report: WeeklyReport): string {
+  const { summary, weekStart, weekEnd, risks, bySystem, highlights, progress } = report;
+  const resolvedRate = Math.round(summary.resolvedRate * 100);
+
+  const stats = [
+    `数据源总数：${summary.totalSources}`,
+    `本周变更数：${summary.totalChanges}`,
+    `破坏性变更：${summary.breakingCount}`,
+    `变更解决率：${resolvedRate}%`,
+    `平均处理时长：${summary.avgHandleHours}h`,
+  ];
+
+  const systemRows = bySystem.map((s) => `
+    <tr>
+      <td style="border:1px solid #ccc;padding:6px 10px;">${s.system}</td>
+      <td style="border:1px solid #ccc;padding:6px 10px;">${s.changes}</td>
+      <td style="border:1px solid #ccc;padding:6px 10px;">${s.breaking}</td>
+    </tr>
+  `).join('');
+
+  const highlightHtml = highlights.length
+    ? highlights.map((h) => `<li>${h}</li>`).join('')
+    : '<li>—</li>';
+
+  const riskHtml = risks.length
+    ? risks.map((r) => `<li>${r}</li>`).join('')
+    : '<li>无</li>';
+
+  const progressHtml = progress.length
+    ? progress.map((p) => `<li>${p}</li>`).join('')
+    : '<li>—</li>';
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>API 变更周报（${weekStart} ~ ${weekEnd}）</title>
+<style>
+  body {
+    font-family: "Microsoft YaHei", "SimSun", sans-serif;
+    line-height: 1.7;
+    color: #1d2129;
+    padding: 30px 40px;
+  }
+  h1 {
+    color: #165DFF;
+    border-bottom: 2px solid #165DFF;
+    padding-bottom: 10px;
+    font-size: 22px;
+  }
+  h2 {
+    color: #1d2129;
+    font-size: 16px;
+    margin-top: 22px;
+    border-left: 4px solid #165DFF;
+    padding-left: 10px;
+  }
+  ul { padding-left: 22px; }
+  li { margin: 5px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 10px;
+  }
+  th {
+    background: #165DFF;
+    color: #fff;
+    border: 1px solid #165DFF;
+    padding: 8px 12px;
+    text-align: left;
+  }
+</style>
+</head>
+<body>
+  <h1>API 变更周报（${weekStart} ~ ${weekEnd}）</h1>
+
+  <h2>摘要统计</h2>
+  <ul>${stats.map((s) => `<li>${s}</li>`).join('')}</ul>
+
+  <h2>本周亮点</h2>
+  <ul>${highlightHtml}</ul>
+
+  <h2>风险提示</h2>
+  <ul>${riskHtml}</ul>
+
+  <h2>推进进度</h2>
+  <ul>${progressHtml}</ul>
+
+  <h2>按系统分布</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>系统</th>
+        <th>全部变更</th>
+        <th>破坏性变更</th>
+      </tr>
+    </thead>
+    <tbody>${systemRows}</tbody>
+  </table>
+
+  <p style="margin-top:30px;color:#7A8494;font-size:12px;text-align:center;">
+    由 API 治理平台自动生成 · ${new Date().toLocaleString('zh-CN')}
+  </p>
+</body>
+</html>`;
+}
+
 export default function Reports() {
   const latest = mockWeeklyReport;
+  const { showToast, ToastContainer } = useToast();
 
   const statCards = [
     {
@@ -81,6 +503,38 @@ export default function Reports() {
     },
   ];
 
+  const handleExportPdf = (): void => {
+    const html = generatePdfReportHtml(latest, mockReports);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const filename = `API变更周报_${getFileDateRange(latest)}_printable.html`;
+    triggerDownload(blob, filename);
+    showToast('PDF 格式报告已导出（浏览器打印 Ctrl+P 可转 PDF），正在下载...');
+  };
+
+  const handleExportExcel = (): void => {
+    const csv = generateCsv(latest, mockReports);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const filename = `API变更周报_${getFileDateRange(latest)}_summary.xlsx`;
+    triggerDownload(blob, filename);
+    showToast('已生成 Excel 报告，正在下载...');
+  };
+
+  const handleExportWord = (): void => {
+    const html = generateWordHtml(latest);
+    const blob = new Blob([html], { type: 'application/msword;charset=utf-8' });
+    const filename = `API变更周报_${getFileDateRange(latest)}_summary.doc`;
+    triggerDownload(blob, filename);
+    showToast('已生成 Word 报告，正在下载...');
+  };
+
+  const handleDownloadReport = (report: WeeklyReport): void => {
+    const html = generatePdfReportHtml(report, mockReports.filter((r) => r !== report));
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const filename = `API变更周报_${getFileDateRange(report)}_printable.html`;
+    triggerDownload(blob, filename);
+    showToast(`已生成 ${report.weekStart} ~ ${report.weekEnd} 周报，正在下载...`);
+  };
+
   return (
     <PageContainer
       title="报告中心"
@@ -92,21 +546,22 @@ export default function Reports() {
             本周
             <ChevronDown size={14} strokeWidth={2} />
           </button>
-          <button className="btn-secondary">
+          <button className="btn-secondary" onClick={handleExportPdf}>
             <FileText size={16} strokeWidth={1.8} />
             导出 PDF
           </button>
-          <button className="btn-secondary">
+          <button className="btn-secondary" onClick={handleExportExcel}>
             <Table size={16} strokeWidth={1.8} />
             导出 Excel
           </button>
-          <button className="btn-primary">
+          <button className="btn-primary" onClick={handleExportWord}>
             <FileSpreadsheet size={16} strokeWidth={1.8} />
             导出 Word
           </button>
         </div>
       }
     >
+      {ToastContainer}
       <div className="space-y-5">
         <div className="glass-card p-6 border-t-4 border-t-brand-500">
           <div className="flex flex-wrap items-start justify-between gap-5 mb-6">
@@ -479,7 +934,10 @@ export default function Reports() {
                       需关注
                     </span>
                   )}
-                  <button className="btn-ghost h-8 px-3 text-xs">
+                  <button
+                    className="btn-ghost h-8 px-3 text-xs"
+                    onClick={() => handleDownloadReport(report)}
+                  >
                     <Download size={12} strokeWidth={1.8} />
                     下载
                   </button>
