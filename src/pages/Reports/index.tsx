@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { PageContainer } from '@/components/Layout';
 import { mockReports, mockWeeklyReport } from '@/mock/reports';
 import type { WeeklyReport } from '@/types';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+import * as XLSX from 'xlsx';
 import {
   FileBarChart2,
   Download,
@@ -19,6 +22,7 @@ import {
   Table,
   FileSpreadsheet,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 import {
   LineChart,
@@ -87,17 +91,17 @@ function useToast() {
   return { showToast, ToastContainer };
 }
 
-function escapeCsv(val: string | number): string {
-  const s = String(val);
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-function generatePdfReportHtml(report: WeeklyReport, history: WeeklyReport[]): string {
-  const { summary, weekStart, weekEnd, risks, bySystem } = report;
+function buildPdfReportDom(report: WeeklyReport, history: WeeklyReport[]): HTMLDivElement {
+  const { summary, weekStart, weekEnd, risks, bySystem, highlights, progress } = report;
   const resolvedRate = Math.round(summary.resolvedRate * 100);
+
+  const statColors = [
+    { bg: 'linear-gradient(135deg,#165DFF 0%,#4080FF 100%)', text: '#ffffff' },
+    { bg: 'linear-gradient(135deg,#00B42A 0%,#23C343 100%)', text: '#ffffff' },
+    { bg: 'linear-gradient(135deg,#F53F3F 0%,#FF6B6B 100%)', text: '#ffffff' },
+    { bg: 'linear-gradient(135deg,#722ED1 0%,#9F56F5 100%)', text: '#ffffff' },
+    { bg: 'linear-gradient(135deg,#FF7D00 0%,#FF9A2E 100%)', text: '#ffffff' },
+  ];
 
   const stats = [
     { label: '数据源总数', value: summary.totalSources },
@@ -107,181 +111,585 @@ function generatePdfReportHtml(report: WeeklyReport, history: WeeklyReport[]): s
     { label: '平均处理时长', value: `${summary.avgHandleHours}h` },
   ];
 
-  const historyRows = history.slice(0, 4).map((r) => `
+  const maxChanges = Math.max(...bySystem.map((s) => s.changes), 1);
+  const maxBreaking = Math.max(...bySystem.map((s) => s.breaking), 1);
+
+  const historyRows = history.slice(0, 8).map((r) => `
     <tr>
-      <td>${r.weekStart}</td>
-      <td>${r.weekEnd}</td>
-      <td>${r.summary.totalChanges}</td>
-      <td>${r.summary.breakingCount}</td>
-      <td>${Math.round(r.summary.resolvedRate * 100)}%</td>
-      <td>${r.summary.avgHandleHours}h</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;">${r.weekStart}</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;">${r.weekEnd}</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;text-align:center;">${r.summary.totalChanges}</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;text-align:center;">${r.summary.breakingCount}</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;text-align:center;">${Math.round(r.summary.resolvedRate * 100)}%</td>
+      <td style="padding:10px 12px;border:1px solid #E5E6EB;text-align:center;">${r.summary.avgHandleHours}h</td>
     </tr>
+  `).join('');
+
+  const systemRows = bySystem.map((s) => {
+    const changeWidth = (s.changes / maxChanges) * 100;
+    const breakWidth = maxBreaking > 0 ? (s.breaking / maxBreaking) * 60 : 0;
+    return `
+      <tr>
+        <td style="padding:10px 12px;border:1px solid #E5E6EB;font-weight:500;">${s.system}</td>
+        <td style="padding:10px 12px;border:1px solid #E5E6EB;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="width:36px;text-align:right;font-weight:600;color:#165DFF;">${s.changes}</span>
+            <div style="flex:1;height:8px;background:#F2F3F5;border-radius:4px;overflow:hidden;">
+              <div style="width:${changeWidth}%;height:100%;background:linear-gradient(90deg,#165DFF,#4080FF);border-radius:4px;"></div>
+            </div>
+          </div>
+        </td>
+        <td style="padding:10px 12px;border:1px solid #E5E6EB;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="width:28px;text-align:right;font-weight:600;color:#F53F3F;">${s.breaking}</span>
+            <div style="flex:1;height:8px;background:#FFF1F0;border-radius:4px;overflow:hidden;">
+              <div style="width:${breakWidth}%;height:100%;background:linear-gradient(90deg,#F53F3F,#FF6B6B);border-radius:4px;"></div>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const riskItems = risks.length
+    ? risks.map((r) => `<li style="margin:6px 0;padding-left:4px;">● ${r}</li>`).join('')
+    : '<li style="margin:6px 0;padding-left:4px;">● 本周无风险提示</li>';
+
+  const highlightItems = highlights.length
+    ? highlights.map((h) => `<li style="margin:6px 0;padding-left:4px;">✓ ${h}</li>`).join('')
+    : '<li style="margin:6px 0;padding-left:4px;">—</li>';
+
+  const progressItems = progress.length
+    ? progress.map((p, i) => `<li style="margin:6px 0;padding-left:4px;">${i + 1}. ${p}</li>`).join('')
+    : '<li style="margin:6px 0;padding-left:4px;">—</li>';
+
+  const statsHtml = stats.map((s, i) => `
+    <div style="
+      flex:1;
+      min-width:0;
+      padding:18px 16px;
+      border-radius:12px;
+      background:${statColors[i].bg};
+      color:${statColors[i].text};
+      box-shadow:0 2px 8px rgba(0,0,0,0.08);
+    ">
+      <div style="font-size:12px;opacity:0.9;margin-bottom:6px;">${s.label}</div>
+      <div style="font-size:26px;font-weight:700;line-height:1.2;">${s.value}</div>
+    </div>
+  `).join('');
+
+  const html = `
+    <div style="
+      width:794px;
+      background:#ffffff;
+      padding:40px 48px;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+      color:#1d2129;
+      line-height:1.6;
+      box-sizing:border-box;
+    ">
+      <div style="
+        background:linear-gradient(135deg,#0E42D2 0%,#165DFF 40%,#4080FF 100%);
+        border-radius:16px;
+        padding:28px 32px;
+        color:#ffffff;
+        margin-bottom:28px;
+        position:relative;
+        overflow:hidden;
+      ">
+        <div style="position:absolute;top:-40px;right:-40px;width:160px;height:160px;border-radius:50%;background:rgba(255,255,255,0.08);"></div>
+        <div style="position:absolute;bottom:-60px;right:80px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,0.05);"></div>
+        <div style="position:relative;">
+          <div style="font-size:22px;font-weight:700;margin-bottom:8px;letter-spacing:1px;">API 变更雷达</div>
+          <div style="font-size:18px;font-weight:600;opacity:0.95;">API 变更周报 (${weekStart} ~ ${weekEnd})</div>
+          <div style="font-size:12px;opacity:0.8;margin-top:10px;">
+            生成时间：${new Date().toLocaleString('zh-CN')} · 共 ${summary.totalSources} 个数据源接入
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:24px;">
+        <div style="
+          font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+          padding-left:10px;border-left:4px solid #165DFF;
+        ">摘要统计</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">${statsHtml}</div>
+      </div>
+
+      <div style="margin-bottom:24px;">
+        <div style="
+          font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+          padding-left:10px;border-left:4px solid #F53F3F;
+        ">⚠ 风险提示</div>
+        <div style="
+          background:#FFF3E8;border:1px solid #FFD5B0;border-radius:12px;
+          padding:16px 20px;color:#7A3B00;
+        ">
+          <ul style="margin:0;padding-left:0;list-style:none;">${riskItems}</ul>
+        </div>
+      </div>
+
+      <div style="margin-bottom:24px;">
+        <div style="
+          font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+          padding-left:10px;border-left:4px solid #165DFF;
+        ">按系统分布</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr>
+              <th style="background:#165DFF;color:#ffffff;font-weight:600;padding:10px 12px;text-align:left;border:1px solid #165DFF;">系统</th>
+              <th style="background:#165DFF;color:#ffffff;font-weight:600;padding:10px 12px;text-align:left;border:1px solid #165DFF;width:40%;">变更数</th>
+              <th style="background:#165DFF;color:#ffffff;font-weight:600;padding:10px 12px;text-align:left;border:1px solid #165DFF;width:32%;">破坏性</th>
+            </tr>
+          </thead>
+          <tbody>${systemRows}</tbody>
+        </table>
+      </div>
+
+      <div style="margin-bottom:24px;">
+        <div style="
+          font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+          padding-left:10px;border-left:4px solid #00B42A;
+        ">历史周报汇总</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:left;border:1px solid #0E42D2;">周开始</th>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:left;border:1px solid #0E42D2;">周结束</th>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:center;border:1px solid #0E42D2;">总变更</th>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:center;border:1px solid #0E42D2;">破坏性</th>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:center;border:1px solid #0E42D2;">解决率</th>
+              <th style="background:#0E42D2;color:#fff;font-weight:600;padding:8px 12px;text-align:center;border:1px solid #0E42D2;">平均时长</th>
+            </tr>
+          </thead>
+          <tbody>${historyRows}</tbody>
+        </table>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div style="
+            font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+            padding-left:10px;border-left:4px solid #00B42A;
+          ">本周亮点</div>
+          <div style="background:#F2FFFA;border:1px solid #B7F5DA;border-radius:12px;padding:14px 18px;color:#007A5A;">
+            <ul style="margin:0;padding-left:0;list-style:none;">${highlightItems}</ul>
+          </div>
+        </div>
+        <div>
+          <div style="
+            font-size:15px;font-weight:600;color:#1d2129;margin-bottom:14px;
+            padding-left:10px;border-left:4px solid #722ED1;
+          ">推进进度</div>
+          <div style="background:#F9F0FF;border:1px solid #D3ADF7;border-radius:12px;padding:14px 18px;color:#4C1F99;">
+            <ul style="margin:0;padding-left:0;list-style:none;">${progressItems}</ul>
+          </div>
+        </div>
+      </div>
+
+      <div style="
+        margin-top:36px;padding-top:16px;border-top:1px solid #E5E6EB;
+        font-size:12px;color:#7A8494;text-align:center;
+      ">
+        © 2026 API 治理平台 · 本报告由系统自动生成
+      </div>
+    </div>
+  `;
+
+  const wrapper = document.createElement('div');
+  wrapper.style.position = 'fixed';
+  wrapper.style.left = '-9999px';
+  wrapper.style.top = '0';
+  wrapper.style.zIndex = '-1';
+  wrapper.innerHTML = html;
+  document.body.appendChild(wrapper);
+
+  return wrapper as HTMLDivElement;
+}
+
+async function generatePdfReport(report: WeeklyReport, history: WeeklyReport[]): Promise<void> {
+  const wrapper = buildPdfReportDom(report, history);
+  const content = wrapper.firstElementChild as HTMLDivElement;
+
+  try {
+    const canvas = await html2canvas(content, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+    });
+
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 40;
+    const contentWidth = pageWidth - margin * 2;
+    const contentHeight = pageHeight - margin * 2;
+
+    const imgWidth = contentWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    pdf.addImage(imgData, 'PNG', margin, margin + position, imgWidth, imgHeight);
+    heightLeft -= contentHeight;
+
+    while (heightLeft > 0) {
+      position = position - contentHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', margin, margin + position, imgWidth, imgHeight);
+      heightLeft -= contentHeight;
+    }
+
+    const filename = `API变更周报_${getFileDateRange(report)}_完整版.pdf`;
+    pdf.save(filename);
+  } finally {
+    document.body.removeChild(wrapper);
+  }
+}
+
+async function generatePdfReportArchive(report: WeeklyReport, history: WeeklyReport[]): Promise<void> {
+  const wrapper = buildPdfReportDom(report, history);
+  const content = wrapper.firstElementChild as HTMLDivElement;
+
+  try {
+    const canvas = await html2canvas(content, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+    });
+
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 40;
+    const contentWidth = pageWidth - margin * 2;
+    const contentHeight = pageHeight - margin * 2;
+
+    const imgWidth = contentWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    pdf.addImage(imgData, 'PNG', margin, margin + position, imgWidth, imgHeight);
+    heightLeft -= contentHeight;
+
+    while (heightLeft > 0) {
+      position = position - contentHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', margin, margin + position, imgWidth, imgHeight);
+      heightLeft -= contentHeight;
+    }
+
+    const filename = `API变更周报_${getFileDateRange(report)}_周报归档.pdf`;
+    pdf.save(filename);
+  } finally {
+    document.body.removeChild(wrapper);
+  }
+}
+
+function generateExcelReport(report: WeeklyReport, history: WeeklyReport[]): void {
+  const { summary, weekStart, weekEnd, risks, bySystem } = report;
+
+  const overviewData: (string | number)[][] = [
+    ['WeekStart', 'WeekEnd', 'TotalSources', 'TotalChanges', 'Breaking', 'ResolvedRate', 'AvgHandleHours'],
+    [
+      weekStart,
+      weekEnd,
+      summary.totalSources,
+      summary.totalChanges,
+      summary.breakingCount,
+      `${(summary.resolvedRate * 100).toFixed(2)}%`,
+      summary.avgHandleHours,
+    ],
+  ];
+
+  const bySystemData: (string | number)[][] = [
+    ['System', 'Changes', 'Breaking', 'NonBreaking', 'BreakingRate'],
+    ...bySystem.map((s) => [
+      s.system,
+      s.changes,
+      s.breaking,
+      s.changes - s.breaking,
+      s.changes > 0 ? `${((s.breaking / s.changes) * 100).toFixed(1)}%` : '0%',
+    ]),
+  ];
+
+  const riskData: (string | number)[][] = [
+    ['ID', 'RiskLevel', 'Description'],
+    ...risks.map((r, i) => [`R-${String(i + 1).padStart(3, '0')}`, 'High', r]),
+  ];
+
+  const historyTop8 = history.slice(0, 8);
+  const historyData: (string | number)[][] = [
+    ['WeekStart', 'WeekEnd', 'TotalChanges', 'Breaking', 'ResolvedRate', 'AvgHandleHours'],
+    ...historyTop8.map((r) => [
+      r.weekStart,
+      r.weekEnd,
+      r.summary.totalChanges,
+      r.summary.breakingCount,
+      `${(r.summary.resolvedRate * 100).toFixed(2)}%`,
+      r.summary.avgHandleHours,
+    ]),
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const ws1 = XLSX.utils.aoa_to_sheet(overviewData);
+  const ws2 = XLSX.utils.aoa_to_sheet(bySystemData);
+  const ws3 = XLSX.utils.aoa_to_sheet(riskData);
+  const ws4 = XLSX.utils.aoa_to_sheet(historyData);
+
+  ws1['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 16 }];
+  ws2['!cols'] = [{ wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 14 }];
+  ws3['!cols'] = [{ wch: 10 }, { wch: 12 }, { wch: 60 }];
+  ws4['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 16 }];
+
+  XLSX.utils.book_append_sheet(wb, ws1, '概览');
+  XLSX.utils.book_append_sheet(wb, ws2, '按系统分布');
+  XLSX.utils.book_append_sheet(wb, ws3, '风险项');
+  XLSX.utils.book_append_sheet(wb, ws4, '历史周报汇总');
+
+  const filename = `API变更周报_${getFileDateRange(report)}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+
+function generateWordReport(report: WeeklyReport, history: WeeklyReport[]): void {
+  const { summary, weekStart, weekEnd, risks, bySystem, highlights, progress } = report;
+  const resolvedRate = Math.round(summary.resolvedRate * 100);
+
+  const statColors = ['#165DFF', '#00B42A', '#F53F3F', '#722ED1', '#FF7D00'];
+  const stats = [
+    { label: '数据源总数', value: summary.totalSources },
+    { label: '本周变更数', value: summary.totalChanges },
+    { label: '破坏性变更', value: summary.breakingCount },
+    { label: '变更解决率', value: `${resolvedRate}%` },
+    { label: '平均处理时长', value: `${summary.avgHandleHours}h` },
+  ];
+
+  const statsHtml = stats.map((s, i) => `
+    <td style="
+      width:20%;
+      padding:16px 12px;
+      border:1px solid #E5E6EB;
+      background:#F7F8FA;
+      text-align:center;
+      vertical-align:top;
+    ">
+      <div style="font-size:12px;color:#7A8494;margin-bottom:6px;">${s.label}</div>
+      <div style="font-size:24px;font-weight:700;color:${statColors[i]};">${s.value}</div>
+    </td>
   `).join('');
 
   const systemRows = bySystem.map((s) => `
     <tr>
-      <td>${s.system}</td>
-      <td>${s.changes}</td>
-      <td>${s.breaking}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;">${s.system}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${s.changes}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${s.breaking}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${s.changes - s.breaking}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">
+        ${s.changes > 0 ? ((s.breaking / s.changes) * 100).toFixed(1) : 0}%
+      </td>
     </tr>
   `).join('');
 
-  const riskItems = risks.length
-    ? risks.map((r) => `<li>${r}</li>`).join('')
-    : '<li>本周无风险提示</li>';
+  const historyRows = history.slice(0, 8).map((r) => `
+    <tr>
+      <td style="padding:8px 12px;border:1px solid #ccc;">${r.weekStart}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;">${r.weekEnd}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${r.summary.totalChanges}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${r.summary.breakingCount}</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${Math.round(r.summary.resolvedRate * 100)}%</td>
+      <td style="padding:8px 12px;border:1px solid #ccc;text-align:center;">${r.summary.avgHandleHours}h</td>
+    </tr>
+  `).join('');
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
+  const highlightHtml = highlights.length
+    ? highlights.map((h) => `<li style="margin:4px 0;">${h}</li>`).join('')
+    : '<li>—</li>';
+
+  const riskHtml = risks.length
+    ? risks.map((r) => `<li style="margin:4px 0;">${r}</li>`).join('')
+    : '<li>无</li>';
+
+  const progressHtml = progress.length
+    ? progress.map((p) => `<li style="margin:4px 0;">${p}</li>`).join('')
+    : '<li>—</li>';
+
+  const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
 <head>
-<meta charset="UTF-8">
+<meta charset='utf-8'>
 <title>API 变更周报（${weekStart} ~ ${weekEnd}）</title>
+<!--[if gte mso 9]>
+<xml>
+<w:WordDocument>
+<w:View>Print</w:View>
+<w:Zoom>100</w:Zoom>
+<w:DoNotOptimizeForBrowser/>
+</w:WordDocument>
+</xml>
+<![endif]-->
 <style>
-  * { box-sizing: border-box; }
   body {
-    margin: 0;
-    padding: 40px 48px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #ffffff;
+    font-family: "Microsoft YaHei", "SimSun", sans-serif;
+    line-height: 1.7;
     color: #1d2129;
-    line-height: 1.6;
+    padding: 20px 30px;
+    mso-line-height-rule: exactly;
   }
   .header {
-    border-bottom: 3px solid #165DFF;
-    padding-bottom: 18px;
+    background: #165DFF;
+    color: #ffffff;
+    padding: 24px 28px;
     margin-bottom: 28px;
+    border-radius: 8px;
+    mso-element: para-border-div;
   }
   .header .brand {
-    font-size: 12px;
-    color: #7A8494;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-  }
-  .header h1 {
-    margin: 0;
-    font-size: 26px;
-    color: #1d2129;
+    font-size: 20px;
     font-weight: 700;
+    margin-bottom: 6px;
   }
   .header .sub {
-    margin-top: 6px;
-    color: #4E5969;
-    font-size: 13px;
+    font-size: 16px;
+    opacity: 0.95;
   }
-  .section-title {
+  .header .meta {
+    font-size: 11px;
+    opacity: 0.8;
+    margin-top: 8px;
+  }
+  h2 {
+    color: #1d2129;
     font-size: 15px;
     font-weight: 600;
-    color: #1d2129;
-    margin: 28px 0 12px 0;
+    margin-top: 24px;
+    margin-bottom: 12px;
     padding-left: 10px;
     border-left: 4px solid #165DFF;
+    mso-border-left-alt: solid #165DFF 4px;
   }
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 16px;
-  }
-  .stat-card {
-    border: 1px solid #E5E6EB;
-    border-radius: 10px;
-    padding: 16px;
-    background: linear-gradient(180deg, #F7F8FA 0%, #FFFFFF 100%);
-  }
-  .stat-card .label {
-    font-size: 12px;
-    color: #7A8494;
-    margin-bottom: 6px;
-  }
-  .stat-card .value {
-    font-size: 22px;
-    font-weight: 700;
-    color: #165DFF;
-  }
-  table {
+  table.stats-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 13px;
+    margin-bottom: 10px;
   }
-  table th {
+  table.data-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 8px;
+    mso-table-layout-alt: fixed;
+  }
+  table.data-table th {
     background: #165DFF;
     color: #ffffff;
     font-weight: 600;
-    padding: 10px 12px;
+    padding: 8px 12px;
     text-align: left;
     border: 1px solid #165DFF;
   }
-  table td {
-    padding: 10px 12px;
-    border: 1px solid #E5E6EB;
-    color: #1d2129;
+  table.data-table td {
+    padding: 8px 12px;
+    border: 1px solid #ccc;
   }
-  table tbody tr:nth-child(even) td {
+  table.data-table tr:nth-child(even) td {
     background: #F7F8FA;
   }
-  .risks {
+  .risk-box {
     background: #FFF3E8;
     border: 1px solid #FFD5B0;
-    border-radius: 10px;
-    padding: 16px 20px;
-  }
-  .risks ul {
-    margin: 0;
-    padding-left: 22px;
-  }
-  .risks li {
+    padding: 14px 18px;
     color: #7A3B00;
-    margin: 6px 0;
+    border-radius: 8px;
   }
+  .highlight-box {
+    background: #F2FFFA;
+    border: 1px solid #B7F5DA;
+    padding: 14px 18px;
+    color: #007A5A;
+    border-radius: 8px;
+  }
+  .progress-box {
+    background: #F9F0FF;
+    border: 1px solid #D3ADF7;
+    padding: 14px 18px;
+    color: #4C1F99;
+    border-radius: 8px;
+  }
+  .two-col {
+    display: table;
+    width: 100%;
+    margin-top: 8px;
+  }
+  .two-col .col {
+    display: table-cell;
+    width: 50%;
+    padding: 0 8px;
+    vertical-align: top;
+  }
+  .two-col .col:first-child { padding-left: 0; }
+  .two-col .col:last-child { padding-right: 0; }
+  ul { margin: 0; padding-left: 22px; }
   .footer {
-    margin-top: 48px;
+    margin-top: 40px;
     padding-top: 16px;
     border-top: 1px solid #E5E6EB;
-    font-size: 12px;
+    font-size: 11px;
     color: #7A8494;
     text-align: center;
-  }
-  @media print {
-    body { padding: 20px; }
-    .stats { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    mso-border-top-alt: solid #E5E6EB 1px;
   }
 </style>
 </head>
 <body>
   <div class="header">
-    <div class="brand">API Governance Weekly Report</div>
-    <h1>API 变更周报（${weekStart} ~ ${weekEnd}）</h1>
-    <div class="sub">生成时间：${new Date().toLocaleString('zh-CN')} · 共 ${summary.totalSources} 个数据源接入</div>
+    <div class="brand">API 变更雷达</div>
+    <div class="sub">API 变更周报（${weekStart} ~ ${weekEnd}）</div>
+    <div class="meta">生成时间：${new Date().toLocaleString('zh-CN')} · 共 ${summary.totalSources} 个数据源接入</div>
   </div>
 
-  <div class="section-title">摘要统计</div>
-  <div class="stats">
-    ${stats.map((s) => `
-      <div class="stat-card">
-        <div class="label">${s.label}</div>
-        <div class="value">${s.value}</div>
-      </div>
-    `).join('')}
+  <h2>摘要统计</h2>
+  <table class="stats-table" cellpadding="0" cellspacing="0">
+    <tr>${statsHtml}</tr>
+  </table>
+
+  <h2 style="border-left-color:#F53F3F;mso-border-left-alt:solid #F53F3F 4px;">风险提示</h2>
+  <div class="risk-box">
+    <ul>${riskHtml}</ul>
   </div>
 
-  <div class="section-title">风险提示</div>
-  <div class="risks">
-    <ul>${riskItems}</ul>
-  </div>
-
-  <div class="section-title">按系统分布</div>
-  <table>
+  <h2>按系统分布</h2>
+  <table class="data-table" border="1" cellpadding="6" cellspacing="0">
     <thead>
       <tr>
         <th>系统</th>
-        <th>全部变更</th>
-        <th>破坏性变更</th>
+        <th>变更数</th>
+        <th>破坏性</th>
+        <th>非破坏性</th>
+        <th>破坏率</th>
       </tr>
     </thead>
     <tbody>${systemRows}</tbody>
   </table>
 
-  <div class="section-title">历史周报概览</div>
-  <table>
+  <h2>本周亮点</h2>
+  <div class="highlight-box">
+    <ul>${highlightHtml}</ul>
+  </div>
+
+  <h2 style="border-left-color:#722ED1;mso-border-left-alt:solid #722ED1 4px;">推进进度</h2>
+  <div class="progress-box">
+    <ul>${progressHtml}</ul>
+  </div>
+
+  <h2 style="border-left-color:#00B42A;mso-border-left-alt:solid #00B42A 4px;">历史周报汇总</h2>
+  <table class="data-table" border="1" cellpadding="6" cellspacing="0">
     <thead>
       <tr>
         <th>周开始</th>
@@ -296,166 +704,24 @@ function generatePdfReportHtml(report: WeeklyReport, history: WeeklyReport[]): s
   </table>
 
   <div class="footer">
-    © 2026 API 治理平台 · 本报告为自动生成，使用浏览器 Ctrl+P 可另存为 PDF
+    © 2026 API 治理平台 · 本报告由系统自动生成 · ${new Date().toLocaleString('zh-CN')}
   </div>
 </body>
 </html>`;
-}
 
-function generateCsv(report: WeeklyReport, history: WeeklyReport[]): string {
-  const lines: string[] = [];
-  const s = report.summary;
-
-  lines.push([
-    'Summary',
-    report.weekStart,
-    report.weekEnd,
-    s.totalSources,
-    s.totalChanges,
-    s.breakingCount,
-    (s.resolvedRate * 100).toFixed(2) + '%',
-    s.avgHandleHours,
-  ].map(escapeCsv).join(','));
-
-  lines.push('');
-  lines.push(['System', 'Changes', 'Breaking'].map(escapeCsv).join(','));
-  for (const row of report.bySystem) {
-    lines.push([row.system, row.changes, row.breaking].map(escapeCsv).join(','));
-  }
-
-  lines.push('');
-  lines.push([
-    'WeekStart',
-    'WeekEnd',
-    'TotalChanges',
-    'Breaking',
-    'ResolvedRate',
-    'AvgHours',
-  ].map(escapeCsv).join(','));
-  for (const r of history) {
-    lines.push([
-      r.weekStart,
-      r.weekEnd,
-      r.summary.totalChanges,
-      r.summary.breakingCount,
-      (r.summary.resolvedRate * 100).toFixed(2) + '%',
-      r.summary.avgHandleHours,
-    ].map(escapeCsv).join(','));
-  }
-
-  return '\ufeff' + lines.join('\r\n');
-}
-
-function generateWordHtml(report: WeeklyReport): string {
-  const { summary, weekStart, weekEnd, risks, bySystem, highlights, progress } = report;
-  const resolvedRate = Math.round(summary.resolvedRate * 100);
-
-  const stats = [
-    `数据源总数：${summary.totalSources}`,
-    `本周变更数：${summary.totalChanges}`,
-    `破坏性变更：${summary.breakingCount}`,
-    `变更解决率：${resolvedRate}%`,
-    `平均处理时长：${summary.avgHandleHours}h`,
-  ];
-
-  const systemRows = bySystem.map((s) => `
-    <tr>
-      <td style="border:1px solid #ccc;padding:6px 10px;">${s.system}</td>
-      <td style="border:1px solid #ccc;padding:6px 10px;">${s.changes}</td>
-      <td style="border:1px solid #ccc;padding:6px 10px;">${s.breaking}</td>
-    </tr>
-  `).join('');
-
-  const highlightHtml = highlights.length
-    ? highlights.map((h) => `<li>${h}</li>`).join('')
-    : '<li>—</li>';
-
-  const riskHtml = risks.length
-    ? risks.map((r) => `<li>${r}</li>`).join('')
-    : '<li>无</li>';
-
-  const progressHtml = progress.length
-    ? progress.map((p) => `<li>${p}</li>`).join('')
-    : '<li>—</li>';
-
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>API 变更周报（${weekStart} ~ ${weekEnd}）</title>
-<style>
-  body {
-    font-family: "Microsoft YaHei", "SimSun", sans-serif;
-    line-height: 1.7;
-    color: #1d2129;
-    padding: 30px 40px;
-  }
-  h1 {
-    color: #165DFF;
-    border-bottom: 2px solid #165DFF;
-    padding-bottom: 10px;
-    font-size: 22px;
-  }
-  h2 {
-    color: #1d2129;
-    font-size: 16px;
-    margin-top: 22px;
-    border-left: 4px solid #165DFF;
-    padding-left: 10px;
-  }
-  ul { padding-left: 22px; }
-  li { margin: 5px 0; }
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    margin-top: 10px;
-  }
-  th {
-    background: #165DFF;
-    color: #fff;
-    border: 1px solid #165DFF;
-    padding: 8px 12px;
-    text-align: left;
-  }
-</style>
-</head>
-<body>
-  <h1>API 变更周报（${weekStart} ~ ${weekEnd}）</h1>
-
-  <h2>摘要统计</h2>
-  <ul>${stats.map((s) => `<li>${s}</li>`).join('')}</ul>
-
-  <h2>本周亮点</h2>
-  <ul>${highlightHtml}</ul>
-
-  <h2>风险提示</h2>
-  <ul>${riskHtml}</ul>
-
-  <h2>推进进度</h2>
-  <ul>${progressHtml}</ul>
-
-  <h2>按系统分布</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>系统</th>
-        <th>全部变更</th>
-        <th>破坏性变更</th>
-      </tr>
-    </thead>
-    <tbody>${systemRows}</tbody>
-  </table>
-
-  <p style="margin-top:30px;color:#7A8494;font-size:12px;text-align:center;">
-    由 API 治理平台自动生成 · ${new Date().toLocaleString('zh-CN')}
-  </p>
-</body>
-</html>`;
+  const blob = new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' });
+  const filename = `API变更周报_${getFileDateRange(report)}_完整报告.doc`;
+  triggerDownload(blob, filename);
 }
 
 export default function Reports() {
   const latest = mockWeeklyReport;
   const { showToast, ToastContainer } = useToast();
+  const [loadingPdf, setLoadingPdf] = useState(false);
+  const [loadingExcel, setLoadingExcel] = useState(false);
+  const [loadingWord, setLoadingWord] = useState(false);
+  const [downloadingReportId, setDownloadingReportId] = useState<number | null>(null);
+  const loadingRef = useRef(false);
 
   const statCards = [
     {
@@ -503,36 +769,73 @@ export default function Reports() {
     },
   ];
 
-  const handleExportPdf = (): void => {
-    const html = generatePdfReportHtml(latest, mockReports);
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const filename = `API变更周报_${getFileDateRange(latest)}_printable.html`;
-    triggerDownload(blob, filename);
-    showToast('PDF 格式报告已导出（浏览器打印 Ctrl+P 可转 PDF），正在下载...');
+  const handleExportPdf = async (): Promise<void> => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingPdf(true);
+    try {
+      showToast('正在生成 PDF 报告...');
+      await generatePdfReport(latest, mockReports);
+      showToast('已生成 PDF 报告，正在下载...');
+    } catch (err) {
+      console.error(err);
+      showToast('PDF 生成失败，请重试');
+    } finally {
+      setLoadingPdf(false);
+      loadingRef.current = false;
+    }
   };
 
   const handleExportExcel = (): void => {
-    const csv = generateCsv(latest, mockReports);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const filename = `API变更周报_${getFileDateRange(latest)}_summary.xlsx`;
-    triggerDownload(blob, filename);
-    showToast('已生成 Excel 报告，正在下载...');
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingExcel(true);
+    try {
+      showToast('正在生成 Excel 报告...');
+      generateExcelReport(latest, mockReports);
+      showToast('已生成 Excel 报告，正在下载...');
+    } catch (err) {
+      console.error(err);
+      showToast('Excel 生成失败，请重试');
+    } finally {
+      setLoadingExcel(false);
+      loadingRef.current = false;
+    }
   };
 
   const handleExportWord = (): void => {
-    const html = generateWordHtml(latest);
-    const blob = new Blob([html], { type: 'application/msword;charset=utf-8' });
-    const filename = `API变更周报_${getFileDateRange(latest)}_summary.doc`;
-    triggerDownload(blob, filename);
-    showToast('已生成 Word 报告，正在下载...');
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingWord(true);
+    try {
+      showToast('正在生成 Word 报告...');
+      generateWordReport(latest, mockReports);
+      showToast('已生成 Word 报告，正在下载...');
+    } catch (err) {
+      console.error(err);
+      showToast('Word 生成失败，请重试');
+    } finally {
+      setLoadingWord(false);
+      loadingRef.current = false;
+    }
   };
 
-  const handleDownloadReport = (report: WeeklyReport): void => {
-    const html = generatePdfReportHtml(report, mockReports.filter((r) => r !== report));
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const filename = `API变更周报_${getFileDateRange(report)}_printable.html`;
-    triggerDownload(blob, filename);
-    showToast(`已生成 ${report.weekStart} ~ ${report.weekEnd} 周报，正在下载...`);
+  const handleDownloadReport = async (report: WeeklyReport, idx: number): Promise<void> => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setDownloadingReportId(idx);
+    try {
+      showToast(`正在生成 ${report.weekStart} ~ ${report.weekEnd} 周报...`);
+      const otherHistory = mockReports.filter((_, i) => i !== idx);
+      await generatePdfReportArchive(report, otherHistory);
+      showToast(`已生成 ${report.weekStart} ~ ${report.weekEnd} 周报，正在下载...`);
+    } catch (err) {
+      console.error(err);
+      showToast('周报生成失败，请重试');
+    } finally {
+      setDownloadingReportId(null);
+      loadingRef.current = false;
+    }
   };
 
   return (
@@ -546,17 +849,56 @@ export default function Reports() {
             本周
             <ChevronDown size={14} strokeWidth={2} />
           </button>
-          <button className="btn-secondary" onClick={handleExportPdf}>
-            <FileText size={16} strokeWidth={1.8} />
-            导出 PDF
+          <button
+            className="btn-secondary"
+            onClick={handleExportPdf}
+            disabled={loadingPdf || loadingExcel || loadingWord || downloadingReportId !== null}
+          >
+            {loadingPdf ? (
+              <>
+                <Loader2 size={16} strokeWidth={1.8} className="animate-spin" />
+                正在生成...
+              </>
+            ) : (
+              <>
+                <FileText size={16} strokeWidth={1.8} />
+                导出 PDF
+              </>
+            )}
           </button>
-          <button className="btn-secondary" onClick={handleExportExcel}>
-            <Table size={16} strokeWidth={1.8} />
-            导出 Excel
+          <button
+            className="btn-secondary"
+            onClick={handleExportExcel}
+            disabled={loadingPdf || loadingExcel || loadingWord || downloadingReportId !== null}
+          >
+            {loadingExcel ? (
+              <>
+                <Loader2 size={16} strokeWidth={1.8} className="animate-spin" />
+                正在生成...
+              </>
+            ) : (
+              <>
+                <Table size={16} strokeWidth={1.8} />
+                导出 Excel
+              </>
+            )}
           </button>
-          <button className="btn-primary" onClick={handleExportWord}>
-            <FileSpreadsheet size={16} strokeWidth={1.8} />
-            导出 Word
+          <button
+            className="btn-primary"
+            onClick={handleExportWord}
+            disabled={loadingPdf || loadingExcel || loadingWord || downloadingReportId !== null}
+          >
+            {loadingWord ? (
+              <>
+                <Loader2 size={16} strokeWidth={1.8} className="animate-spin" />
+                正在生成...
+              </>
+            ) : (
+              <>
+                <FileSpreadsheet size={16} strokeWidth={1.8} />
+                导出 Word
+              </>
+            )}
           </button>
         </div>
       }
@@ -936,10 +1278,20 @@ export default function Reports() {
                   )}
                   <button
                     className="btn-ghost h-8 px-3 text-xs"
-                    onClick={() => handleDownloadReport(report)}
+                    onClick={() => handleDownloadReport(report, idx)}
+                    disabled={downloadingReportId !== null}
                   >
-                    <Download size={12} strokeWidth={1.8} />
-                    下载
+                    {downloadingReportId === idx ? (
+                      <>
+                        <Loader2 size={12} strokeWidth={1.8} className="animate-spin" />
+                        正在生成...
+                      </>
+                    ) : (
+                      <>
+                        <Download size={12} strokeWidth={1.8} />
+                        下载
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

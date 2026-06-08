@@ -1,8 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { PageContainer } from '@/components/Layout';
 import { useAppStore } from '@/store/appStore';
-import { mockSources } from '@/mock/sources';
 import { mockUsers } from '@/mock/users';
+import { formatFromNow } from '@/utils';
 import type {
   ChangeSeverity,
   ChangeCategory,
@@ -23,6 +23,9 @@ import {
   X,
   ChevronDown,
   Check,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -91,6 +94,13 @@ const timeOptions = (() => {
   }
   return opts;
 })();
+
+type ToastType = 'success' | 'error' | 'info';
+interface ToastItem {
+  id: string;
+  type: ToastType;
+  message: string;
+}
 
 function Avatar({
   name,
@@ -266,8 +276,63 @@ function MultiSelectDropdown({
   );
 }
 
+function Toast({
+  toast,
+  onRemove,
+}: {
+  toast: ToastItem;
+  onRemove: (id: string) => void;
+}) {
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      onRemove(toast.id);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [toast.id, onRemove]);
+
+  const bgClass =
+    toast.type === 'success'
+      ? 'bg-success-50/95 border-success-200 text-success-700'
+      : toast.type === 'error'
+        ? 'bg-danger-50/95 border-danger-200 text-danger-700'
+        : 'bg-brand-50/95 border-brand-200 text-brand-700';
+
+  const Icon = toast.type === 'success' ? Check : toast.type === 'error' ? AlertTriangle : AlertTriangle;
+
+  return (
+    <div
+      className={cn(
+        'pointer-events-auto flex items-center gap-3 rounded-xl border px-4 py-3 shadow-lg backdrop-blur-md min-w-[260px] animate-fade-in-up',
+        bgClass,
+      )}
+    >
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/60">
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+      <span className="text-sm font-medium">{toast.message}</span>
+    </div>
+  );
+}
+
+function ToastContainer({
+  toasts,
+  onRemove,
+}: {
+  toasts: ToastItem[];
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-3 pointer-events-none">
+      {toasts.map((t) => (
+        <Toast key={t.id} toast={t} onRemove={onRemove} />
+      ))}
+    </div>
+  );
+}
+
 export default function Alerts() {
-  const { alertRules, toggleAlertRule, addAlertRule, updateAlertRule } =
+  const sources = useAppStore((s) => s.sources);
+  const { alertRules, toggleAlertRule, addAlertRule, updateAlertRule, setAlertRuleLastTested } =
     useAppStore();
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -275,6 +340,21 @@ export default function Alerts() {
     null,
   );
   const [subscriberDraft, setSubscriberDraft] = useState<string[]>([]);
+  const [tmpLastTestedAt, setTmpLastTestedAt] = useState<string | null>(null);
+  const [testSending, setTestSending] = useState(false);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const pushToast = (type: ToastType, message: string) => {
+    const id = 'toast-' + Date.now().toString(36);
+    setToasts((prev) => {
+      const next = [...prev, { id, type, message }];
+      return next.slice(-3);
+    });
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const emptyForm: FormState = {
     name: '',
@@ -314,7 +394,34 @@ export default function Alerts() {
 
   function openCreate() {
     setForm(emptyForm);
+    setTmpLastTestedAt(null);
     setCreateOpen(true);
+  }
+
+  function handleSendTest() {
+    const enabledChannels = (Object.keys(form.channelEnabled) as ChannelType[]).filter(
+      (t) => form.channelEnabled[t],
+    );
+    if (enabledChannels.length === 0 || form.subscribers.length === 0) {
+      pushToast('error', '请先配置至少一个通知渠道和订阅人');
+      return;
+    }
+
+    setTestSending(true);
+    setTimeout(() => {
+      setTestSending(false);
+      const parts: string[] = [];
+      enabledChannels.forEach((t) => {
+        if (t === 'email') {
+          const count = form.subscribers.length;
+          parts.push(`邮件(${count}人)`);
+        } else {
+          parts.push(`${channelLabels[t]}群`);
+        }
+      });
+      pushToast('success', `测试通知已发送至：${parts.join('、')}`);
+      setTmpLastTestedAt(new Date().toISOString());
+    }, 1500);
   }
 
   function submitCreate() {
@@ -350,9 +457,11 @@ export default function Alerts() {
         : undefined,
       createdAt: new Date().toISOString(),
       createdBy: '林若曦',
+      lastTestedAt: tmpLastTestedAt ?? undefined,
     };
 
     addAlertRule(rule);
+    pushToast('success', '提醒规则创建成功');
     setCreateOpen(false);
   }
 
@@ -364,7 +473,14 @@ export default function Alerts() {
   function saveSubscribers() {
     if (!subscriberModalId) return;
     updateAlertRule(subscriberModalId, { subscribers: subscriberDraft });
+    pushToast('success', '订阅人已更新');
     setSubscriberModalId(null);
+  }
+
+  function handleRetest(ruleId: string) {
+    const now = new Date().toISOString();
+    setAlertRuleLastTested(ruleId, now);
+    pushToast('success', '测试通知已重发');
   }
 
   const userMap = useMemo(() => {
@@ -506,6 +622,28 @@ export default function Alerts() {
                   </button>
                 </div>
 
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-ink-50/60 px-3 py-2 border border-ink-100">
+                  {rule.lastTestedAt ? (
+                    <div className="flex items-center gap-2 text-xs">
+                      <CheckCircle2 className="h-4 w-4 text-success-500" />
+                      <span className="text-ink-600">
+                        最近测试：{formatFromNow(rule.lastTestedAt)}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs">
+                      <AlertCircle className="h-4 w-4 text-ink-400" />
+                      <span className="text-ink-400">尚未测试</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => handleRetest(rule.id)}
+                    className="btn-ghost px-2 py-1 text-xs"
+                  >
+                    再测一次
+                  </button>
+                </div>
+
                 <div className="mb-4">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 mb-2">
                     触发条件
@@ -555,7 +693,7 @@ export default function Alerts() {
                         {shownAvatars.map((u, i) => (
                           <Avatar
                             key={u.id}
-                            name={u.name}
+                            name={u?.name ?? u.id}
                             index={i}
                           />
                         ))}
@@ -716,7 +854,7 @@ export default function Alerts() {
                   </span>
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {mockSources.map((src) => {
+                  {sources.map((src) => {
                     const active = form.sources.includes(src.id);
                     return (
                       <button
@@ -739,6 +877,9 @@ export default function Alerts() {
                       </button>
                     );
                   })}
+                  {sources.length === 0 && (
+                    <span className="text-xs text-ink-400">暂无可选的接口源</span>
+                  )}
                 </div>
               </div>
 
@@ -866,6 +1007,39 @@ export default function Alerts() {
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="pt-4 border-t border-dashed border-ink-200">
+                <div className="mb-3 flex items-center gap-2">
+                  <BellRing className="h-4 w-4 text-brand-500" />
+                  <span className="text-xs font-semibold text-ink-700">发送测试通知</span>
+                  {tmpLastTestedAt && (
+                    <span className="text-[11px] text-success-600 ml-auto">
+                      ✓ 已测试
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSendTest}
+                  disabled={testSending}
+                  className={cn(
+                    'btn-secondary w-full',
+                    testSending && 'cursor-not-allowed opacity-70',
+                  )}
+                >
+                  {testSending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      正在发送...
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="h-4 w-4" />
+                      发送测试通知
+                    </>
+                  )}
+                </button>
               </div>
 
               <MultiSelectDropdown
@@ -1135,6 +1309,8 @@ export default function Alerts() {
           </div>
         </div>
       )}
+
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </PageContainer>
   );
 }

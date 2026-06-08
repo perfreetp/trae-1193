@@ -184,6 +184,7 @@ export interface AlertRule {
   };
   createdAt: string;
   createdBy: string;
+  lastTestedAt?: string;
 }
 
 export interface User {
@@ -218,4 +219,45 @@ export interface WeeklyReport {
   progress: string[];
   bySystem: { system: string; changes: number; breaking: number }[];
   trend: TrendPoint[];
+}
+
+export type ScanTrigger = 'manual' | 'scheduled' | 'import';
+export type ScanStatus = 'success' | 'failed' | 'running';
+
+export interface ScanHistory {
+  id: string;
+  sourceId: string;
+  version: string;
+  scanAt: string;
+  status: ScanStatus;
+  triggeredBy: ScanTrigger;
+  durationMs: number;
+  apiCount: number;
+  apiCountDelta: number;
+  newApis: number;
+  modifiedApis: number;
+  removedApis: number;
+  totalChanges: number;
+  breakingChanges: number;
+  failReason?: string;
+  operator?: string;
+}
+
+export type ImportMode = 'overwrite' | 'append' | 'skip';
+export type ImportDocType = 'openapi3' | 'swagger2' | 'postman' | 'markdown';
+
+export interface ImportRecord {
+  id: string;
+  sourceId: string;
+  fileName: string;
+  docType: ImportDocType;
+  importMode: ImportMode;
+  importedBy: string;
+  importedAt: string;
+  parsedApiCount: number;
+  versionBefore: string;
+  versionAfter: string;
+  apiCountDelta: number;
+  conflictCount?: number;
+  notes?: string;
 }

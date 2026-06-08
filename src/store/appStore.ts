@@ -7,17 +7,22 @@ import type {
   WorkStatus,
   WorkPriority,
   Comment,
+  ScanHistory,
+  ImportRecord,
 } from '@/types';
 import { mockSources } from '@/mock/sources';
 import { mockChanges } from '@/mock/changes';
 import { mockWorkItems } from '@/mock/workItems';
 import { mockAlertRules } from '@/mock/alerts';
+import { mockScanHistories, mockImportRecords } from '@/mock/scan';
 
 interface AppState {
   sources: ApiSource[];
   changes: ApiChange[];
   workItems: WorkItem[];
   alertRules: AlertRule[];
+  scanHistories: ScanHistory[];
+  importRecords: ImportRecord[];
 
   setSources: (sources: ApiSource[]) => void;
   addSource: (source: ApiSource) => void;
@@ -34,6 +39,12 @@ interface AppState {
   addAlertRule: (rule: AlertRule) => void;
   updateAlertRule: (id: string, patch: Partial<AlertRule>) => void;
   removeAlertRule: (id: string) => void;
+
+  addScanHistory: (scan: ScanHistory) => void;
+  addImportRecord: (rec: ImportRecord) => void;
+  getScanHistoriesBySource: (sourceId: string) => ScanHistory[];
+  getImportRecordsBySource: (sourceId: string) => ImportRecord[];
+  setAlertRuleLastTested: (id: string, at: string) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -41,6 +52,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   changes: mockChanges,
   workItems: mockWorkItems,
   alertRules: mockAlertRules,
+  scanHistories: mockScanHistories,
+  importRecords: mockImportRecords,
 
   setSources: (sources) => set({ sources }),
   addSource: (source) =>
@@ -110,6 +123,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeAlertRule: (id) =>
     set((state) => ({
       alertRules: state.alertRules.filter((r) => r.id !== id),
+    })),
+
+  addScanHistory: (scan) =>
+    set((state) => ({ scanHistories: [scan, ...state.scanHistories] })),
+  addImportRecord: (rec) =>
+    set((state) => ({ importRecords: [rec, ...state.importRecords] })),
+  getScanHistoriesBySource: (id) =>
+    get()
+      .scanHistories.filter((h) => h.sourceId === id)
+      .sort((a, b) => new Date(b.scanAt).getTime() - new Date(a.scanAt).getTime()),
+  getImportRecordsBySource: (id) =>
+    get()
+      .importRecords.filter((r) => r.sourceId === id)
+      .sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()),
+  setAlertRuleLastTested: (id, at) =>
+    set((state) => ({
+      alertRules: state.alertRules.map((r) =>
+        r.id === id ? { ...r, lastTestedAt: at } : r,
+      ),
     })),
 
   getChangesForWorkItem: (workItemId: string) => {
