@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  font-family: 'Noto Sans SC', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1d2129;
+  background: #f7f8fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+::selection {
+  background: rgba(22, 93, 255, 0.18);
+  color: #0a319e;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #dadfe6;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aeb5c0;
+}
+
+@layer components {
+  .glass-card {
+    @apply rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-card;
+  }
+  .glass-card-hover {
+    @apply transition-all duration-150 hover:-translate-y-0.5 hover:shadow-cardHover;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .chip-outline {
+    @apply border border-ink-200 bg-white text-ink-500;
+  }
+  .nav-item {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-ink-500 transition-colors hover:bg-ink-50 hover:text-ink-700;
+  }
+  .nav-item-active {
+    @apply bg-brand-50 text-brand-700 shadow-[inset_0_0_0_1px_rgba(22,93,255,0.12)] hover:bg-brand-50 hover:text-brand-700;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white shadow-sm hover:bg-brand-700 hover:shadow-md active:bg-brand-800 focus:ring-brand-400;
+  }
+  .btn-secondary {
+    @apply btn border border-ink-200 bg-white text-ink-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 focus:ring-brand-300;
+  }
+  .btn-danger {
+    @apply btn bg-danger-400 text-white hover:bg-danger-500 focus:ring-danger-300;
+  }
+  .btn-ghost {
+    @apply btn text-ink-600 hover:bg-ink-100 focus:ring-ink-200;
+  }
+  .input-field {
+    @apply w-full rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-700 shadow-sm transition-colors placeholder:text-ink-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100;
+  }
+  .section-title {
+    @apply font-display text-lg font-semibold text-ink-700;
+  }
+  .data-table {
+    @apply w-full border-separate border-spacing-0 text-left text-sm;
+  }
+  .data-table thead th {
+    @apply sticky top-0 z-10 bg-ink-50/90 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-ink-500 backdrop-blur;
+  }
+  .data-table tbody td {
+    @apply border-t border-ink-100 px-4 py-3 text-ink-700;
+  }
+  .data-table tbody tr {
+    @apply transition-colors hover:bg-ink-50;
+  }
+  .tag {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold;
+  }
+  .divider-x {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-ink-200 to-transparent;
+  }
+  .kanban-column {
+    @apply flex w-72 shrink-0 flex-col gap-3 rounded-2xl border border-ink-100 bg-ink-50/60 p-3;
+  }
+  .kanban-card {
+    @apply cursor-grab rounded-xl border border-ink-100 bg-white p-3 shadow-card transition-all hover:shadow-cardHover active:cursor-grabbing;
+  }
+  .method-badge {
+    @apply inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-white;
+  }
+}
+
+.gradient-mesh-bg {
+  background:
+    radial-gradient(60% 60% at 10% 0%, rgba(22, 93, 255, 0.08) 0%, transparent 60%),
+    radial-gradient(40% 50% at 95% 20%, rgba(0, 180, 42, 0.06) 0%, transparent 60%),
+    radial-gradient(50% 40% at 50% 100%, rgba(255, 125, 0, 0.05) 0%, transparent 60%),
+    #f7f8fa;
+}
+
+.shimmer-line {
+  background: linear-gradient(
+    90deg,
+    rgba(29, 33, 41, 0.04) 0%,
+    rgba(29, 33, 41, 0.12) 50%,
+    rgba(29, 33, 41, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2.2s linear infinite;
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+
+.edge-flow {
+  stroke-dasharray: 6 4;
+  animation: dash 1.2s linear infinite;
+}
