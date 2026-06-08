@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   ChevronDown,
@@ -11,6 +11,8 @@ import {
   X,
   Check,
   Loader2,
+  Save,
+  Camera,
 } from 'lucide-react';
 import { mockSources } from '@/mock/sources';
 import {
@@ -27,6 +29,7 @@ import type {
   ChangeSeverity,
   HttpMethod,
   WorkItem,
+  DiffSnapshot,
 } from '@/types';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/appStore';
@@ -415,10 +418,155 @@ function CreateWorkItemModal({
   );
 }
 
+function SaveSnapshotModal({
+  open,
+  label,
+  onLabelChange,
+  onClose,
+  onSave,
+  saving,
+  versionFrom,
+  versionTo,
+  totalStats,
+}: {
+  open: boolean;
+  label: string;
+  onLabelChange: (v: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+  saving: boolean;
+  versionFrom: string;
+  versionTo: string;
+  totalStats: Stats;
+}) {
+  useEffect(() => {
+    if (open) {
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div
+        className="absolute inset-0 bg-ink-900/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative z-10 w-full max-w-md rounded-2xl border border-white/60 bg-white/85 p-5 shadow-2xl backdrop-blur-xl animate-fade-in-up">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-display text-lg font-bold text-ink-700 flex items-center gap-2">
+              <Camera className="h-5 w-5 text-brand-500" />
+              保存对比快照
+            </h2>
+            <p className="mt-0.5 text-xs text-ink-400">
+              保存当前对比结果，便于后续查看
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-600"
+          >
+            <X size={18} strokeWidth={1.8} />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-ink-600">
+              快照名称
+            </label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => onLabelChange(e.target.value)}
+              className="input-field w-full"
+              placeholder="输入快照名称"
+            />
+          </div>
+
+          <div className="rounded-lg border border-ink-100 bg-ink-50/60 p-3 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-ink-400">版本范围</span>
+              <div className="flex items-center gap-1.5 font-mono">
+                <span className="text-ink-500">v{versionFrom}</span>
+                <ArrowRight className="h-3 w-3 text-ink-300" />
+                <span className="text-brand-600 font-semibold">v{versionTo}</span>
+              </div>
+            </div>
+
+            <div className="border-t border-ink-100 pt-3">
+              <div className="mb-2 text-xs font-semibold text-ink-500">变更汇总预览</div>
+              <div className="grid grid-cols-5 gap-2">
+                <div className="text-center">
+                  <div className="text-lg font-bold text-success-600">+{totalStats.added}</div>
+                  <div className="text-[10px] text-success-500">新增</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-bold text-danger-600">-{totalStats.removed}</div>
+                  <div className="text-[10px] text-danger-500">删除</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-bold text-warning-600">~{totalStats.modified}</div>
+                  <div className="text-[10px] text-warning-500">修改</div>
+                </div>
+                <div className="text-center">
+                  <div className={cn(
+                    'text-lg font-bold',
+                    totalStats.breaking > 0 ? 'text-danger-700' : 'text-ink-400',
+                  )}>
+                    !{totalStats.breaking}
+                  </div>
+                  <div className="text-[10px] text-danger-500">破坏性</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-bold text-ink-700">{totalStats.total}</div>
+                  <div className="text-[10px] text-ink-500">合计</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-3 border-t border-ink-100 pt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-ghost"
+            disabled={saving}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            className="btn-primary"
+            disabled={saving}
+          >
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                保存中
+              </>
+            ) : (
+              <>
+                <Save className="h-4 w-4" />
+                确认保存
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Diff() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const sources = useAppStore((s) => s.sources);
   const scanHistories = useAppStore((s) => s.scanHistories);
+  const addDiffSnapshot = useAppStore((s) => s.addDiffSnapshot);
   const allSources = sources.length ? sources : mockSources;
 
   const [leftSourceId, setLeftSourceId] = useState(mockSources[0].id);
@@ -433,6 +581,9 @@ export default function Diff() {
     null,
   );
   const [diffTriggered, setDiffTriggered] = useState(false);
+  const [snapshotModalOpen, setSnapshotModalOpen] = useState(false);
+  const [snapshotLabel, setSnapshotLabel] = useState('');
+  const [snapshotSaving, setSnapshotSaving] = useState(false);
 
   const pushToast = (type: ToastType, message: string) => {
     const id = 'toast-' + Date.now().toString(36);
@@ -626,6 +777,45 @@ export default function Diff() {
     setWorkItemOpen(true);
   };
 
+  const canSaveSnapshot = diffTriggered && (filteredChanges.length > 0 || !!scanSummaryStats);
+
+  const handleOpenSnapshotModal = () => {
+    const sourceName = leftSource?.name || '接口源';
+    setSnapshotLabel(`${sourceName} v${leftVersion} → v${rightVersion} 对比`);
+    setSnapshotModalOpen(true);
+  };
+
+  const handleSaveSnapshot = () => {
+    setSnapshotSaving(true);
+    setTimeout(() => {
+      const byCategory = categoryStats as DiffSnapshot['summary']['byCategory'];
+      const totalStatsForSnap = showScanSummary && scanSummaryStats ? scanSummaryStats : totalStats;
+      const snapshot: DiffSnapshot = {
+        id: 'ds-' + Date.now().toString(36),
+        sourceId: leftSourceId === rightSourceId ? leftSourceId : leftSourceId,
+        leftSourceId,
+        rightSourceId,
+        versionFrom: leftVersion,
+        versionTo: rightVersion,
+        savedAt: new Date().toISOString(),
+        savedBy: mockUsers[Math.floor(Math.random() * mockUsers.length)].name,
+        label: snapshotLabel.trim() || undefined,
+        summary: {
+          totalChanges: totalStatsForSnap.total,
+          added: totalStatsForSnap.added,
+          removed: totalStatsForSnap.removed,
+          modified: totalStatsForSnap.modified,
+          breaking: totalStatsForSnap.breaking,
+          byCategory,
+        },
+      };
+      addDiffSnapshot(snapshot);
+      setSnapshotSaving(false);
+      setSnapshotModalOpen(false);
+      pushToast('success', '快照已保存，可在报告中心或接口源详情中回看');
+    }, 600);
+  };
+
   return (
     <div className="min-h-screen p-6 gradient-mesh-bg">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -794,7 +984,7 @@ export default function Diff() {
               </div>
             </div>
 
-            <div className="flex items-end">
+            <div className="flex items-end gap-2">
               <button
                 type="button"
                 className="btn-primary"
@@ -802,6 +992,18 @@ export default function Diff() {
               >
                 <GitCompare className="h-4 w-4" />
                 生成对比报告
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'btn-secondary flex items-center gap-1.5',
+                  !canSaveSnapshot && 'opacity-50 cursor-not-allowed',
+                )}
+                onClick={handleOpenSnapshotModal}
+                disabled={!canSaveSnapshot}
+              >
+                <Save className="h-4 w-4" />
+                保存为快照
               </button>
             </div>
           </div>
@@ -1097,12 +1299,28 @@ export default function Diff() {
                   key={c.id}
                   change={c}
                   onCreateWorkItem={handleCreateWorkItem}
+                  sourceId={leftSourceId}
                 />
               ))
             )}
           </div>
         </div>
       </div>
+
+      <SaveSnapshotModal
+        open={snapshotModalOpen}
+        label={snapshotLabel}
+        onLabelChange={setSnapshotLabel}
+        onClose={() => {
+          setSnapshotModalOpen(false);
+          setSnapshotSaving(false);
+        }}
+        onSave={handleSaveSnapshot}
+        saving={snapshotSaving}
+        versionFrom={leftVersion}
+        versionTo={rightVersion}
+        totalStats={showScanSummary && scanSummaryStats ? scanSummaryStats : totalStats}
+      />
 
       <CreateWorkItemModal
         open={workItemOpen}
@@ -1122,12 +1340,26 @@ export default function Diff() {
 function DiffRow({
   change,
   onCreateWorkItem,
+  sourceId,
 }: {
   change: ApiChange;
   onCreateWorkItem: (c: ApiChange) => void;
+  sourceId: string;
 }) {
+  const navigate = useNavigate();
   const typeCfg = changeTypeConfig[change.type];
   const isBreaking = change.severity === 'breaking';
+
+  const handleImpactAnalysis = () => {
+    const params = new URLSearchParams();
+    params.set('sourceId', sourceId);
+    params.set('endpoint', change.endpoint);
+    params.set('method', change.method);
+    params.set('category', change.category);
+    params.set('severity', change.severity);
+    params.set('changeId', change.id);
+    navigate(`/impact?${params.toString()}`);
+  };
 
   return (
     <div
@@ -1157,6 +1389,15 @@ function DiffRow({
           <Plus className="h-3 w-3" />
           创建工单
         </button>
+        {isBreaking && (
+          <button
+            type="button"
+            onClick={handleImpactAnalysis}
+            className="btn-ghost text-brand-600 md:mt-0"
+          >
+            📊 影响分析
+          </button>
+        )}
       </div>
 
       {isBreaking && (

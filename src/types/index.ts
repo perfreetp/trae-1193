@@ -261,3 +261,23 @@ export interface ImportRecord {
   conflictCount?: number;
   notes?: string;
 }
+
+export interface DiffSnapshot {
+  id: string;
+  sourceId: string;
+  leftSourceId: string;
+  rightSourceId: string;
+  versionFrom: string;
+  versionTo: string;
+  savedAt: string;
+  savedBy: string;
+  label?: string;
+  summary: {
+    totalChanges: number;
+    added: number;
+    removed: number;
+    modified: number;
+    breaking: number;
+    byCategory: Record<ChangeCategory, { added: number; removed: number; modified: number; breaking: number; total: number }>;
+  };
+}

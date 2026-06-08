@@ -5,11 +5,11 @@ import {
   Search, Plus, Upload, Play, Pencil, Trash2, Loader2, X, Check,
   AlertTriangle, FileUp, Clock, Calendar, GitCompareArrows, FileJson,
   FileText, FileSpreadsheet, ArrowRight, ChevronDown, ArrowUpRight,
-  ArrowDownRight, Minus, Zap, CalendarClock,
+  ArrowDownRight, Minus, Zap, CalendarClock, ChevronRight, Ticket, Camera,
 } from 'lucide-react';
 import { mockSources } from '@/mock/sources';
 import { mockUsers } from '@/mock/users';
-import type { ApiSource, SourceStatus, AuthType, ScanTrigger, ImportDocType, ImportMode } from '@/types';
+import type { ApiSource, SourceStatus, AuthType, ScanTrigger, ImportDocType, ImportMode, ApiChange, HttpMethod, ChangeCategory, ChangeType, ChangeSeverity, ScanHistory, DiffSnapshot } from '@/types';
 import { formatFromNow, cronToHuman, formatDateTime, formatDate } from '@/utils';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/appStore';
@@ -91,10 +91,118 @@ const FAIL_REASONS = [
   '限流触发：请求频率超过服务器限制',
 ];
 
+const PATH_POOL = [
+  '/v1/users/{id}', '/v1/users', '/v1/users/{id}/orders', '/v1/users/{id}/profile',
+  '/v1/orders', '/v1/orders/{id}', '/v1/orders/{id}/items', '/v1/orders/{id}/payments',
+  '/v1/products', '/v1/products/{id}', '/v1/products/search', '/v1/products/{id}/reviews',
+  '/v1/categories', '/v1/categories/{id}/products', '/v1/auth/login', '/v1/auth/refresh',
+  '/v1/cart', '/v1/cart/items', '/v1/checkout', '/v1/payments/{id}/refund',
+];
+
+const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
+
+type DetailSubTab = 'new' | 'modified' | 'removed' | 'breaking';
+
+function seededRandom(seed: string): () => number {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    const char = seed.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  let state = Math.abs(hash) || 1;
+  return () => {
+    state = (state * 1664525 + 1013904223) & 0xffffffff;
+    return (state >>> 0) / 0x100000000;
+  };
+}
+
+function pick<T>(arr: T[], rand: () => number): T {
+  return arr[Math.floor(rand() * arr.length)];
+}
+
+function generateDescription(method: HttpMethod, endpoint: string, category: ChangeCategory, type: ChangeType): string {
+  if (type === 'added') {
+    if (category === 'path') return `${method} ${endpoint} 新增接口`;
+    if (category === 'parameter') return `路径 ${endpoint} 新增必填参数 region`;
+    if (category === 'field') return `${method} ${endpoint} 请求体新增字段 discount`;
+    return `${method} ${endpoint} 新增 ${category}`;
+  }
+  if (type === 'removed') {
+    if (category === 'path') return `${method} ${endpoint} 接口已删除`;
+    if (category === 'field') return `${method} ${endpoint} 请求体移除字段 oldField`;
+    if (category === 'parameter') return `路径 ${endpoint} 移除可选参数 verbose`;
+    return `${method} ${endpoint} 删除 ${category}`;
+  }
+  if (type === 'modified') {
+    if (category === 'field') return `${method} ${endpoint} 响应字段 price 类型由 integer 改为 number`;
+    if (category === 'parameter') return `路径 ${endpoint} 参数 pageSize 默认值由 20 改为 50`;
+    if (category === 'statusCode') return `${method} ${endpoint} 新增 429 状态码响应`;
+    if (category === 'example') return `${method} ${endpoint} 示例响应已更新`;
+    return `${method} ${endpoint} 修改 ${category}`;
+  }
+  return `${method} ${endpoint} 变更`;
+}
+
+function generateChangesForCategory(
+  h: ScanHistory,
+  source: ApiSource,
+  category: DetailSubTab,
+  count: number,
+  versionFrom: string,
+): ApiChange[] {
+  const seed = h.id + '-' + category;
+  const rand = seededRandom(seed);
+  const changes: ApiChange[] = [];
+  for (let i = 0; i < count; i++) {
+    const endpoint = pick(PATH_POOL, rand);
+    let method = pick(HTTP_METHODS, rand);
+    let cat: ChangeCategory;
+    let type: ChangeType;
+    let severity: ChangeSeverity;
+
+    if (category === 'new') {
+      type = 'added';
+      cat = 'path';
+      severity = rand() < 0.3 ? 'minor' : 'normal';
+    } else if (category === 'modified') {
+      type = 'modified';
+      const modCats: ChangeCategory[] = ['field', 'parameter', 'statusCode', 'example'];
+      cat = pick(modCats, rand);
+      severity = rand() < 0.4 ? 'minor' : 'normal';
+      if (cat === 'field' && (method === 'GET' || method === 'DELETE')) method = pick(['PUT', 'POST', 'PATCH'], rand);
+    } else if (category === 'removed') {
+      type = 'removed';
+      cat = 'path';
+      severity = 'breaking';
+    } else {
+      type = rand() < 0.5 ? 'removed' : 'modified';
+      const breakCats: ChangeCategory[] = ['auth', 'field', 'statusCode'];
+      cat = pick(breakCats, rand);
+      severity = 'breaking';
+    }
+
+    changes.push({
+      id: `ch-${h.id}-${category}-${i}`,
+      sourceId: source.id,
+      versionFrom,
+      versionTo: h.version,
+      endpoint,
+      method,
+      category: cat,
+      type,
+      severity,
+      description: generateDescription(method, endpoint, cat, type),
+      detectedAt: h.scanAt,
+    });
+  }
+  return changes;
+}
+
 type ToastType = 'success' | 'error' | 'info' | 'warning';
 interface ToastItem { id: number; type: ToastType; message: string; }
 interface FormErrors { name?: string; system?: string; baseUrl?: string; authType?: string; owner?: string; scanSchedule?: string; }
-type DetailTab = 'scan' | 'import' | 'diff';
+type DetailTab = 'scan' | 'import' | 'diff' | 'snapshot';
 
 function incrementPatchVersion(version: string): string {
   const parts = version.replace('-beta', '').split('.');
@@ -610,14 +718,21 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
   const updateSource = useAppStore((s) => s.updateSource);
   const getScanHistoriesBySource = useAppStore((s) => s.getScanHistoriesBySource);
   const getImportRecordsBySource = useAppStore((s) => s.getImportRecordsBySource);
+  const getDiffSnapshotsBySource = useAppStore((s) => s.getDiffSnapshotsBySource);
+  const removeDiffSnapshot = useAppStore((s) => s.removeDiffSnapshot);
   const sources = useAppStore((s) => s.sources);
+  const addWorkItem = useAppStore((s) => s.addWorkItem);
+  const addChange = useAppStore((s) => s.addChange);
   const [activeTab, setActiveTab] = useState<DetailTab>(initialTab);
   const [versionFrom, setVersionFrom] = useState('');
   const [versionTo, setVersionTo] = useState('');
   const [scanning, setScanning] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [expandedScanId, setExpandedScanId] = useState<string | null>(null);
+  const [detailSubTab, setDetailSubTab] = useState<DetailSubTab>('new');
 
   useEffect(() => { if (open && source) setActiveTab(initialTab); }, [open, source, initialTab]);
+  useEffect(() => { if (open) { setExpandedScanId(null); setDetailSubTab('new'); } }, [open]);
 
   const currentSource = source ? (sources.find((s) => s.id === source.id) || source) : null;
   const scanHistories = useMemo(() => {
@@ -628,6 +743,10 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
     if (!source) return [];
     return [...getImportRecordsBySource(source.id)].sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime());
   }, [source ? source.id : '', refreshKey, source]);
+  const diffSnapshots = useMemo(() => {
+    if (!source) return [];
+    return getDiffSnapshotsBySource(source.id);
+  }, [source ? source.id : '', refreshKey, source, getDiffSnapshotsBySource]);
   const versionOptions = useMemo(() => scanHistories.filter((h) => h.status === 'success').map((h) => ({ version: h.version, scanAt: h.scanAt })), [scanHistories]);
   const recentVersions = versionOptions.slice(0, 4);
 
@@ -674,10 +793,78 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
   };
 
   const goDiff = (vf: string, vt: string) => { navigate(`/diff?sourceId=${source.id}&versionFrom=${vf}&versionTo=${vt}`, { state: { sourceName: source.name, sourceBaseUrl: source.baseUrl } }); };
+
+  const expandedHistory = useMemo(() => {
+    if (!expandedScanId || !source) return null;
+    const h = scanHistories.find((x) => x.id === expandedScanId);
+    if (!h || h.status !== 'success') return null;
+    const idx = scanHistories.indexOf(h);
+    const prev = scanHistories.slice(idx + 1).find((x) => x.status === 'success');
+    const vf = prev ? prev.version : '0.0.0';
+    return {
+      history: h,
+      versionFrom: vf,
+      newChanges: generateChangesForCategory(h, source, 'new', h.newApis, vf),
+      modifiedChanges: generateChangesForCategory(h, source, 'modified', h.modifiedApis, vf),
+      removedChanges: generateChangesForCategory(h, source, 'removed', h.removedApis, vf),
+      breakingChanges: generateChangesForCategory(h, source, 'breaking', h.breakingChanges, vf),
+    };
+  }, [expandedScanId, scanHistories, source]);
+
+  const handleCreateWorkItem = (change: ApiChange) => {
+    const existing = useAppStore.getState().changes.find((c) => c.id === change.id);
+    const changeId = existing ? change.id : addChange({ ...change });
+    const now = new Date().toISOString();
+    const methodLabels: Record<ChangeType, string> = { added: '新增', removed: '删除', modified: '变更' };
+    const title = `[${methodLabels[change.type]}] ${change.method} ${change.endpoint}`;
+    let prio: 'critical' | 'high' | 'medium' | 'low';
+    if (change.severity === 'breaking') prio = 'high';
+    else if (change.severity === 'normal') prio = 'medium';
+    else prio = 'low';
+    const wi = {
+      id: 'wi-' + Date.now().toString(36),
+      title,
+      changeIds: [changeId],
+      status: 'pending_review' as const,
+      priority: prio,
+      assignee: source?.owner,
+      reporter: mockUsers[Math.floor(Math.random() * mockUsers.length)].name,
+      description: `源：${source?.name || ''}\n版本：v${change.versionFrom} → v${change.versionTo}\n路径：${change.method} ${change.endpoint}\n类别：${change.category}\n影响级别：${change.severity}\n\n${change.description}`,
+      createdAt: now,
+      updatedAt: now,
+      comments: [],
+    };
+    addWorkItem(wi);
+    pushToast('success', '工单已创建（关联 1 条变更）');
+  };
+
+  const handleToggleExpand = (h: ScanHistory) => {
+    if (h.status !== 'success') return;
+    setExpandedScanId((prev) => (prev === h.id ? null : h.id));
+    setDetailSubTab('new');
+  };
+
+  const getSubTabChanges = (): ApiChange[] => {
+    if (!expandedHistory) return [];
+    switch (detailSubTab) {
+      case 'new': return expandedHistory.newChanges;
+      case 'modified': return expandedHistory.modifiedChanges;
+      case 'removed': return expandedHistory.removedChanges;
+      case 'breaking': return expandedHistory.breakingChanges;
+    }
+  };
+
+  const subTabs: { key: DetailSubTab; label: string; count: number; color: string; }[] = [
+    { key: 'new', label: '新增', count: expandedHistory?.history.newApis || 0, color: 'text-success-600' },
+    { key: 'modified', label: '修改', count: expandedHistory?.history.modifiedApis || 0, color: 'text-warning-600' },
+    { key: 'removed', label: '删除', count: expandedHistory?.history.removedApis || 0, color: 'text-danger-600' },
+    { key: 'breaking', label: '破坏性', count: expandedHistory?.history.breakingChanges || 0, color: 'text-danger-600 font-bold' },
+  ];
   const tabs: { key: DetailTab; label: string; count: number }[] = [
     { key: 'scan', label: '扫描历史', count: scanHistories.length },
     { key: 'import', label: '导入记录', count: importRecords.length },
     { key: 'diff', label: '版本对比', count: versionOptions.length },
+    { key: 'snapshot', label: '对比快照', count: diffSnapshots.length },
   ];
 
   return (
@@ -748,27 +935,131 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
                       const trig = triggerConfig[h.triggeredBy];
                       const prev = scanHistories.slice(idx + 1).find((x) => x.status === 'success');
                       const DeltaIcon = h.apiCountDelta > 0 ? ArrowUpRight : h.apiCountDelta < 0 ? ArrowDownRight : Minus;
+                      const isExpanded = expandedScanId === h.id;
+                      const canExpand = h.status === 'success';
                       return (
-                        <tr key={h.id} className="hover:bg-ink-50/40">
-                          <td className="px-3 py-2 text-ink-600 whitespace-nowrap">{formatDateTime(h.scanAt)}</td>
-                          <td className="px-3 py-2 font-mono font-semibold text-brand-600 whitespace-nowrap">v{h.version}</td>
-                          <td className="px-3 py-2 whitespace-nowrap"><div className="flex items-center gap-1.5"><trig.icon className={cn('h-3.5 w-3.5', trig.className)} /><span className="text-ink-600">{trig.label}</span>{h.triggeredBy === 'manual' && h.operator && <span className="text-ink-400">· {h.operator}</span>}</div></td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            {h.status === 'success' && <span className="inline-flex items-center gap-1 text-success-600 font-medium"><Check className="h-3.5 w-3.5" />成功</span>}
-                            {h.status === 'running' && <span className="inline-flex items-center gap-1 text-ink-500 font-medium"><Loader2 className="h-3.5 w-3.5 animate-spin" />扫描中</span>}
-                            {h.status === 'failed' && <div><span className="inline-flex items-center gap-1 text-danger-600 font-medium"><AlertTriangle className="h-3.5 w-3.5" />失败</span>{h.failReason && <p className="text-[10px] text-danger-500 mt-0.5 leading-tight max-w-[180px]">{h.failReason}</p>}</div>}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono text-ink-700 whitespace-nowrap">{h.apiCount}</td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap"><div className={cn('inline-flex items-center gap-0.5 font-mono font-semibold', h.apiCountDelta > 0 ? 'text-success-600' : h.apiCountDelta < 0 ? 'text-danger-600' : 'text-ink-400')}><DeltaIcon className="h-3 w-3" />{h.apiCountDelta > 0 ? '+' : ''}{h.apiCountDelta}</div></td>
-                          <td className="px-3 py-2 text-right font-mono text-success-600 whitespace-nowrap">+{h.newApis}</td>
-                          <td className="px-3 py-2 text-right font-mono text-warning-600 whitespace-nowrap">~{h.modifiedApis}</td>
-                          <td className="px-3 py-2 text-right font-mono text-danger-600 whitespace-nowrap">-{h.removedApis}</td>
-                          <td className={cn('px-3 py-2 text-right font-mono whitespace-nowrap', h.breakingChanges > 0 ? 'text-danger-600 font-bold' : 'text-ink-400')}>{h.breakingChanges}</td>
-                          <td className="px-3 py-2 text-right font-mono text-ink-500 whitespace-nowrap">{(h.durationMs / 1000).toFixed(1)}s</td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            {prev && <button type="button" onClick={() => goDiff(prev.version, h.version)} className="text-brand-600 hover:text-brand-700 font-medium text-[11px] flex items-center gap-0.5"><GitCompareArrows className="h-3 w-3" />对比前一次</button>}
-                          </td>
-                        </tr>
+                        <>
+                          <tr key={h.id}
+                            className={cn(
+                              'transition-colors',
+                              canExpand && 'cursor-pointer',
+                              isExpanded ? 'bg-brand-50/60' : canExpand ? 'hover:bg-ink-50/40' : 'opacity-90',
+                              !canExpand && 'cursor-not-allowed',
+                            )}
+                            onClick={() => handleToggleExpand(h)}
+                          >
+                            <td className="px-3 py-2 text-ink-600 whitespace-nowrap">
+                              <div className="flex items-center gap-1">
+                                {canExpand ? (
+                                  <motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}>
+                                    <ChevronDown className="h-3.5 w-3.5 text-ink-400 shrink-0" />
+                                  </motion.div>
+                                ) : (
+                                  <ChevronRight className="h-3.5 w-3.5 text-ink-200 shrink-0" />
+                                )}
+                                <span>{formatDateTime(h.scanAt)}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 font-mono font-semibold text-brand-600 whitespace-nowrap">v{h.version}</td>
+                            <td className="px-3 py-2 whitespace-nowrap"><div className="flex items-center gap-1.5"><trig.icon className={cn('h-3.5 w-3.5', trig.className)} /><span className="text-ink-600">{trig.label}</span>{h.triggeredBy === 'manual' && h.operator && <span className="text-ink-400">· {h.operator}</span>}</div></td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {h.status === 'success' && <span className="inline-flex items-center gap-1 text-success-600 font-medium"><Check className="h-3.5 w-3.5" />成功</span>}
+                              {h.status === 'running' && <span className="inline-flex items-center gap-1 text-ink-500 font-medium"><Loader2 className="h-3.5 w-3.5 animate-spin" />扫描中</span>}
+                              {h.status === 'failed' && <div><span className="inline-flex items-center gap-1 text-danger-600 font-medium"><AlertTriangle className="h-3.5 w-3.5" />失败</span>{h.failReason && <p className="text-[10px] text-danger-500 mt-0.5 leading-tight max-w-[180px]">{h.failReason}</p>}</div>}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-ink-700 whitespace-nowrap">{h.apiCount}</td>
+                            <td className="px-3 py-2 text-right whitespace-nowrap"><div className={cn('inline-flex items-center gap-0.5 font-mono font-semibold', h.apiCountDelta > 0 ? 'text-success-600' : h.apiCountDelta < 0 ? 'text-danger-600' : 'text-ink-400')}><DeltaIcon className="h-3 w-3" />{h.apiCountDelta > 0 ? '+' : ''}{h.apiCountDelta}</div></td>
+                            <td className="px-3 py-2 text-right font-mono text-success-600 whitespace-nowrap">+{h.newApis}</td>
+                            <td className="px-3 py-2 text-right font-mono text-warning-600 whitespace-nowrap">~{h.modifiedApis}</td>
+                            <td className="px-3 py-2 text-right font-mono text-danger-600 whitespace-nowrap">-{h.removedApis}</td>
+                            <td className={cn('px-3 py-2 text-right font-mono whitespace-nowrap', h.breakingChanges > 0 ? 'text-danger-600 font-bold' : 'text-ink-400')}>{h.breakingChanges}</td>
+                            <td className="px-3 py-2 text-right font-mono text-ink-500 whitespace-nowrap">{(h.durationMs / 1000).toFixed(1)}s</td>
+                            <td className="px-3 py-2 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
+                              {prev && <button type="button" onClick={() => goDiff(prev.version, h.version)} className="text-brand-600 hover:text-brand-700 font-medium text-[11px] flex items-center gap-0.5"><GitCompareArrows className="h-3 w-3" />对比前一次</button>}
+                            </td>
+                          </tr>
+                          {isExpanded && expandedHistory && expandedHistory.history.id === h.id && (
+                            <tr key={h.id + '-expanded'} className="bg-brand-50/40">
+                              <td colSpan={12} className="px-3 py-4">
+                                <div className="rounded-xl border border-brand-100 bg-white/70 p-4 space-y-4">
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    {subTabs.map((t) => (
+                                      <button key={t.key} type="button"
+                                        onClick={(e) => { e.stopPropagation(); setDetailSubTab(t.key); }}
+                                        className={cn(
+                                          'px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap flex items-center gap-1',
+                                          detailSubTab === t.key
+                                            ? 'bg-brand-500 text-white shadow-sm'
+                                            : 'text-ink-500 hover:bg-ink-50 hover:text-ink-700 border border-ink-100',
+                                        )}>
+                                        {t.label}
+                                        <span className={cn(detailSubTab === t.key ? 'text-white/80' : t.color)}>({t.count})</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                  {(() => {
+                                    const changes = getSubTabChanges();
+                                    if (changes.length === 0) {
+                                      return (
+                                        <div className="text-center py-6 text-xs text-ink-400">
+                                          暂无{subTabs.find((s) => s.key === detailSubTab)?.label}类变更
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div className="overflow-x-auto rounded-lg border border-ink-100">
+                                        <table className="w-full text-[11px]">
+                                          <thead><tr className="bg-ink-50/80 text-ink-500">
+                                            <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">接口路径</th>
+                                            <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">方法</th>
+                                            <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">变更类别</th>
+                                            <th className="px-2.5 py-2 font-semibold text-left whitespace-nowrap">影响级别</th>
+                                            <th className="px-2.5 py-2 font-semibold text-left">简短说明</th>
+                                            <th className="px-2.5 py-2 font-semibold text-right whitespace-nowrap">操作</th>
+                                          </tr></thead>
+                                          <tbody className="divide-y divide-ink-50">
+                                            {changes.map((c) => (
+                                              <tr key={c.id} className="hover:bg-ink-50/40">
+                                                <td className="px-2.5 py-2 font-mono text-ink-700 whitespace-nowrap">{c.endpoint}</td>
+                                                <td className="px-2.5 py-2 whitespace-nowrap">
+                                                  <span className={cn(
+                                                    'inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold',
+                                                    c.method === 'GET' && 'bg-success-50 text-success-700',
+                                                    c.method === 'POST' && 'bg-brand-50 text-brand-700',
+                                                    c.method === 'PUT' && 'bg-warning-50 text-warning-700',
+                                                    c.method === 'DELETE' && 'bg-danger-50 text-danger-700',
+                                                    c.method === 'PATCH' && 'bg-purple-50 text-purple-700',
+                                                  )}>{c.method}</span>
+                                                </td>
+                                                <td className="px-2.5 py-2 whitespace-nowrap text-ink-600">{c.category}</td>
+                                                <td className="px-2.5 py-2 whitespace-nowrap">
+                                                  <span className={cn(
+                                                    'inline-block px-1.5 py-0.5 rounded text-[10px] font-medium',
+                                                    c.severity === 'breaking' && 'bg-danger-50 text-danger-700 border border-danger-200',
+                                                    c.severity === 'normal' && 'bg-warning-50 text-warning-700',
+                                                    c.severity === 'minor' && 'bg-ink-50 text-ink-600',
+                                                  )}>{c.severity === 'breaking' ? '破坏性' : c.severity === 'normal' ? '普通' : '轻微'}</span>
+                                                </td>
+                                                <td className="px-2.5 py-2 text-ink-600 min-w-[200px]">{c.description}</td>
+                                                <td className="px-2.5 py-2 text-right whitespace-nowrap">
+                                                  <button type="button"
+                                                    onClick={(e) => { e.stopPropagation(); handleCreateWorkItem(c); }}
+                                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-brand-500 hover:bg-brand-600 text-white text-[11px] font-medium transition-colors shadow-sm">
+                                                    <Ticket className="h-3 w-3" />创建工单
+                                                  </button>
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
                       );
                     })}
                   </tbody>
@@ -863,6 +1154,116 @@ function SourceDetailDrawer({ open, source, onClose, initialTab = 'scan', onEdit
                   </div>
                 </div>
               </div>
+            )}
+            {activeTab === 'snapshot' && (
+              diffSnapshots.length === 0 ? (
+                <div className="text-center py-16">
+                  <Camera className="mx-auto h-10 w-10 text-ink-300 mb-3" />
+                  <p className="text-sm text-ink-500 font-medium">暂无对比快照</p>
+                  <p className="text-xs text-ink-400 mt-1 mb-4">去版本对比页保存本次结果</p>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/diff')}
+                    className="btn-primary inline-flex"
+                  >
+                    <GitCompareArrows className="h-3.5 w-3.5" />
+                    去版本对比
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {diffSnapshots.map((snap: DiffSnapshot) => (
+                    <div
+                      key={snap.id}
+                      className="rounded-xl border border-ink-100 bg-white p-4 transition-all hover:border-brand-200 hover:shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="min-w-0 flex-1">
+                          <h4 className="font-medium text-sm text-ink-700 truncate">
+                            {snap.label || `v${snap.versionFrom} → v${snap.versionTo} 对比`}
+                          </h4>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[11px] font-medium text-ink-500">
+                            {formatFromNow(snap.savedAt)}
+                          </div>
+                          <div className="text-[10px] text-ink-400">
+                            {formatDateTime(snap.savedAt)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-xs mb-3 font-mono">
+                        <span className="text-ink-500">v{snap.versionFrom}</span>
+                        <ArrowRight className="h-3 w-3 text-ink-300" />
+                        <span className="text-brand-600 font-semibold">v{snap.versionTo}</span>
+                        <span className="ml-2 text-[10px] text-ink-400">
+                          保存人：{snap.savedBy}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-5 gap-2 mb-3">
+                        <div className="text-center rounded-lg bg-success-50 py-2">
+                          <div className="text-base font-bold text-success-600">
+                            +{snap.summary.added}
+                          </div>
+                          <div className="text-[10px] text-success-500">新增</div>
+                        </div>
+                        <div className="text-center rounded-lg bg-danger-50 py-2">
+                          <div className="text-base font-bold text-danger-600">
+                            -{snap.summary.removed}
+                          </div>
+                          <div className="text-[10px] text-danger-500">删除</div>
+                        </div>
+                        <div className="text-center rounded-lg bg-warning-50 py-2">
+                          <div className="text-base font-bold text-warning-600">
+                            ~{snap.summary.modified}
+                          </div>
+                          <div className="text-[10px] text-warning-500">修改</div>
+                        </div>
+                        <div className={cn("text-center rounded-lg py-2", snap.summary.breaking > 0 ? "bg-danger-50" : "bg-ink-50")}>
+                          <div className={cn(
+                            'text-base font-bold',
+                            snap.summary.breaking > 0 ? 'text-danger-700' : 'text-ink-400',
+                          )}>
+                            !{snap.summary.breaking}
+                          </div>
+                          <div className="text-[10px] text-danger-500">破坏</div>
+                        </div>
+                        <div className="text-center rounded-lg bg-ink-50 py-2">
+                          <div className="text-base font-bold text-ink-700">
+                            {snap.summary.totalChanges}
+                          </div>
+                          <div className="text-[10px] text-ink-500">合计</div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/diff?sourceId=${snap.sourceId}&versionFrom=${snap.versionFrom}&versionTo=${snap.versionTo}`)}
+                          className="text-brand-600 hover:text-brand-700 font-medium text-[11px] flex items-center gap-1 px-2 py-1 rounded-md hover:bg-brand-50 transition-colors"
+                        >
+                          <GitCompareArrows className="h-3 w-3" />
+                          重新打开
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            removeDiffSnapshot(snap.id);
+                            setRefreshKey((k) => k + 1);
+                            pushToast('success', '快照已删除');
+                          }}
+                          className="text-danger-500 hover:text-danger-600 font-medium text-[11px] flex items-center gap-1 px-2 py-1 rounded-md hover:bg-danger-50 transition-colors"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </div>
         </motion.aside>
@@ -1037,19 +1438,19 @@ export default function Sources() {
                           <span className="text-xs text-ink-400 font-mono">v{src.currentVersion}</span>
                         </div>
                       </td>
-                      <td onClick={(e) => e.stopPropagation()}>{src.system}</td>
-                      <td onClick={(e) => e.stopPropagation()}><code className="rounded bg-ink-50 px-2 py-1 text-xs text-ink-600 font-mono break-all">{src.baseUrl}</code></td>
-                      <td onClick={(e) => e.stopPropagation()}><span className={cn('tag', authTypeClass[src.authType])}>{authTypeLabels[src.authType]}</span></td>
-                      <td onClick={(e) => e.stopPropagation()}>{src.owner}</td>
-                      <td onClick={(e) => e.stopPropagation()}>
+                      <td>{src.system}</td>
+                      <td><code className="rounded bg-ink-50 px-2 py-1 text-xs text-ink-600 font-mono break-all">{src.baseUrl}</code></td>
+                      <td><span className={cn('tag', authTypeClass[src.authType])}>{authTypeLabels[src.authType]}</span></td>
+                      <td>{src.owner}</td>
+                      <td>
                         {isScanning ? (
                           <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
                             <Loader2 className="h-3 w-3 animate-spin" />扫描中
                           </span>
                         ) : (<SourceStatusBadge status={src.status} />)}
                       </td>
-                      <td onClick={(e) => e.stopPropagation()}><span className="font-mono font-semibold text-ink-600">{src.apiCount}</span></td>
-                      <td onClick={(e) => e.stopPropagation()} className="text-ink-500 text-sm">
+                      <td><span className="font-mono font-semibold text-ink-600">{src.apiCount}</span></td>
+                      <td className="text-ink-500 text-sm">
                         {formatFromNow(src.lastScanAt)}
                         {src.scanSchedule && (<div className="text-[11px] text-ink-400 mt-0.5">{cronToLabel(src.scanSchedule)}</div>)}
                       </td>
